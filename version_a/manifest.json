@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Textmarker A — Linkshare",
+  "version": "0.1.0",
+  "description": "Highlight text, attach comments, and share them by copying a link. Zero config, no servers: the URL is the database.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "textmarker-a@revamped.local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png"
+  },
+  "permissions": ["storage", "activeTab"],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Textmarker A — share / panel",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "commands": {
+    "comment-selection": {
+      "suggested_key": { "default": "Alt+M", "mac": "Alt+M" },
+      "description": "Highlight the current selection and add a comment"
+    },
+    "copy-share-link": {
+      "suggested_key": { "default": "Alt+L", "mac": "Alt+L" },
+      "description": "Copy a link with this page's comments embedded"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
