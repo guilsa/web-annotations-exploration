@@ -86,8 +86,8 @@ function structure(node) {
 function testA() {
   section('version_a');
   const file = path.join(__dirname, '..', 'version_a', 'content.js');
-  const P = globalThis.__TMA_PURE;
   const { doc, api: dom } = loadContentScript(file, '__TMA_TEST__', '__TMA_DOM');
+  const P = globalThis.__TMA_PURE;
 
   test('pure: squeeze + squeezeMap', () => {
     eq(P.squeeze('  a b\nc  d '), 'abcd');
@@ -109,10 +109,9 @@ function testA() {
   });
 
   test('pure: findOffsets re-locates after text inserted before it', () => {
-    const original = 'Alpha beta gamma delta.';
     const mark = { quote: 'gamma delta', offset: 11, pre: 'beta ', post: '' };
     const modified = 'Alpha NEW WORDS inserted beta gamma delta.';
-    eq(P.findOffsets(modified, mark), [29, 41]);
+    eq(P.findOffsets(modified, mark), [30, 41]);
   });
 
   test('pure: findOffsets picks context-matching occurrence over distance', () => {
@@ -122,16 +121,18 @@ function testA() {
     eq(P.findOffsets(text, mark), [24, 29]);
   });
 
-  test('pure: findOffsets rejects ambiguous short-quote-less-context', () => {
+  test('pure: findOffsets trusts exact match at saved offset, else rejects ambiguous', () => {
     const text = 'the the the the';
-    const mark = { quote: 'the', offset: 4, pre: '', post: '' };
-    eq(P.findOffsets(text, mark), null);
+    // matches at saved offset -> trust it
+    eq(P.findOffsets(text, { quote: 'the', offset: 4, pre: '', post: '' }), [4, 7]);
+    // quote appears 3x, saved offset is wrong, no context -> ambiguous -> null
+    eq(P.findOffsets('abc X abc Y abc', { quote: 'abc', offset: 5, pre: '', post: '' }), null);
   });
 
   test('pure: findOffsets unique occurrence without context', () => {
     const text = 'lorem ipsum dolor sit amet';
     const mark = { quote: 'dolor', offset: 999, pre: '', post: '' };
-    eq(P.findOffsets(text, mark), [11, 16]);
+    eq(P.findOffsets(text, mark), [12, 17]);
   });
 
   test('pure: b64 unicode round-trip', () => {
@@ -209,11 +210,15 @@ function testA() {
     makePage();
     const { idx, range } = rawRange(4, 8); // "o bo"
     const wrappers = dom.wrapRange(range, 'x2', false);
-    assert(wrappers.length >= 1, 'wrappers created');
+    eq(wrappers.length, 2); // one per parent: "o " in <p>, "bo" in <b>
     eq(doc.body.textContent, 'Hello bold world. Second paragraph text here.');
-    // the wrapper must contain the partial "o " text
-    const w = doc.body.querySelectorAll('[data-tma-id="x2"]')[0];
-    assert(w.textContent === 'o bo', 'wrapper text, got: ' + w.textContent);
+    const all = doc.body.querySelectorAll('[data-tma-id="x2"]');
+    eq(all.map((w) => w.textContent), ['o ', 'bo']);
+    // "ld" must NOT be highlighted: <b> stays in place, only "bo" wrapped
+    const p1 = doc.body.childNodes[0];
+    const bold = p1.childNodes[2];
+    assert(bold.tagName === 'B' && !bold.hasAttribute('data-tma-id'), 'b itself not wrapped');
+    assert(bold.childNodes[1].data === 'ld', 'ld outside wrapper');
     dom.unwrapAll('x2');
     eq(doc.body.textContent, 'Hello bold world. Second paragraph text here.');
     eq(doc.body.querySelectorAll('[data-tma-id]').length, 0);
@@ -229,7 +234,7 @@ function testA() {
     assert(wrappers.length === 2, 'two wrappers, got ' + wrappers.length);
     eq(doc.body.textContent, 'Hello bold world. Second paragraph text here.');
     const all = doc.body.querySelectorAll('[data-tma-id="x3"]');
-    eq(all.map((w) => w.textContent).sort(), ['Sec', 'd']);
+    eq(all.map((w) => w.textContent).sort(), ['Sec', 'd. ']);
     dom.unwrapAll('x3');
     eq(doc.body.querySelectorAll('[data-tma-id]').length, 0);
     eq(doc.body.textContent, 'Hello bold world. Second paragraph text here.');

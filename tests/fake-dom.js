@@ -60,6 +60,12 @@ class FakeElement {
     const i = p.childNodes.indexOf(this);
     return p.childNodes[i + 1] || null;
   }
+  get firstChild() {
+    return this.childNodes[0] || null;
+  }
+  get lastChild() {
+    return this.childNodes[this.childNodes.length - 1] || null;
+  }
   get textContent() {
     let out = '';
     for (const c of this.childNodes) {

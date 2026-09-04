@@ -51,7 +51,10 @@
     const sq = squeeze(quote);
     if (sq.length < 3) return null; // too ambiguous to relocate
     if (squeeze(text.slice(target, target + quote.length)) === sq) {
-      return [target, target + quote.length];
+      // Whitespace-insensitive match at the saved offset: the raw end is the
+      // position of the quote's last non-space char, not target + quote.length.
+      const { map: smap } = squeezeMap(text.slice(target, target + quote.length));
+      return [target, target + smap[sq.length - 1] + 1];
     }
 
     const { text: stext, map } = squeezeMap(text);
@@ -59,14 +62,9 @@
 
     const pre = squeeze(mark.pre || '').slice(-20);
     const post = squeeze(mark.post || '').slice(0, 20);
+    const hasCtx = !!(pre || post);
     const lo = Math.max(0, target - window);
     const hi = Math.min(text.length, target + window);
-
-    const ctxOk = (bi) => {
-      const before = squeeze(stext.slice(Math.max(0, bi - 40), bi));
-      const after = squeeze(stext.slice(bi + sq.length, bi + sq.length + 40));
-      return (!pre || before.endsWith(pre)) && (!post || after.startsWith(post));
-    };
 
     const cands = [];
     for (let bi = stext.indexOf(sq); bi !== -1; bi = stext.indexOf(sq, bi + 1)) {
@@ -76,23 +74,40 @@
       if (cands.length > 500) break;
     }
     if (!cands.length) return null;
+    if (cands.length === 1) return [cands[0].rawS, cands[0].rawE];
 
-    let best = null;
-    let bestScore = Infinity;
-    for (const c of cands) {
-      let score = Math.abs((c.rawS + c.rawE) / 2 - (target + sq.length / 2));
-      if (!ctxOk(c.bi)) score += 1e7;
-      if (c.rawS < lo || c.rawS > hi) score += 1e6;
-      if (score < bestScore) {
-        bestScore = score;
-        best = c;
+    const ctxOk = (bi) => {
+      const before = squeeze(stext.slice(Math.max(0, bi - 40), bi));
+      const after = squeeze(stext.slice(bi + sq.length, bi + sq.length + 40));
+      return (!pre || before.endsWith(pre)) && (!post || after.startsWith(post));
+    };
+    const inWindow = (c) => c.rawS >= lo && c.rawS <= hi;
+    const dist = (c) => Math.abs((c.rawS + c.rawE) / 2 - (target + sq.length / 2));
+    const closest = (filter) => {
+      let best = null;
+      let bestScore = Infinity;
+      for (const c of cands) {
+        if (!filter(c)) continue;
+        const s = dist(c);
+        if (s < bestScore) { bestScore = s; best = c; }
       }
+      return best;
+    };
+
+    // Tier A: saved context matches inside the window.
+    if (hasCtx) {
+      const c = closest((x) => ctxOk(x.bi) && inWindow(x));
+      if (c) return [c.rawS, c.rawE];
+      // Tier C: context matches, but outside the window (big insertion/deletion).
+      const c2 = closest((x) => ctxOk(x.bi));
+      if (c2) return [c2.rawS, c2.rawE];
     }
-    if (!best || bestScore >= 1e7) {
-      // No context match: only trust a unique occurrence.
-      if (cands.length !== 1) return null;
+    // Tier B: long quotes disambiguate themselves — closest in window.
+    if (sq.length >= 20) {
+      const c = closest(inWindow);
+      if (c) return [c.rawS, c.rawE];
     }
-    return [best.rawS, best.rawE];
+    return null;
   }
 
   /** UTF-8 safe base64. */
