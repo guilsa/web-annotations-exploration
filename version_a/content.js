@@ -470,6 +470,11 @@
   `;
 
   const hosts = {};
+  /** True if the event's (retargeted) target is inside the named shadow host. */
+  function insideHost(name, e) {
+    const div = hosts[name];
+    return !!div && (e.target === div || div.contains(e.target));
+  }
   function host(name) {
     if (hosts[name]) return hosts[name].shadowRoot;
     const doc = state.doc;
@@ -552,7 +557,7 @@
       createMarkFromSelection();
     });
     state.doc.addEventListener('mousedown', (e) => {
-      if (e.button === 0) hidePill();
+      if (e.button === 0 && !insideHost('pill', e)) hidePill();
     });
   }
   function hidePill() {
@@ -585,6 +590,7 @@
   }
 
   function createMarkFromSelection() {
+    if (!state.marks) return; // not booted yet
     const sel = state.doc.defaultView.getSelection();
     if (!sel || !sel.rangeCount || sel.isCollapsed) return;
     const range = sel.getRangeAt(0).cloneRange();
@@ -685,7 +691,8 @@
     });
     state.doc.addEventListener('mousedown', (e) => {
       const el = host('editor').querySelector('.editor');
-      if (el && el.style.display === 'block' && !el.contains(e.target) && !isHighlight(e.target)) {
+      // e.target is retargeted to the shadow host for events inside the shadow
+      if (el && el.style.display === 'block' && !insideHost('editor', e) && !isHighlight(e.target)) {
         state.editor.close();
       }
     });
@@ -794,6 +801,16 @@
     close.addEventListener('click', () => {
       pinned = false;
       hide();
+    });
+
+    // Clicking outside (not on a highlight, not inside the card) unpins.
+    state.doc.addEventListener('mousedown', (e) => {
+      const box2 = host('card').querySelector('.card');
+      if (box2.style.display === 'block' && !insideHost('card', e) && !isHighlight(e.target)) {
+        pinned = false;
+        box2.style.display = 'none';
+        current = null;
+      }
     });
 
     const onOver = (e) => {
@@ -931,11 +948,8 @@
   function refreshHighlights() {
     clearHighlights();
     state.idx = buildIndex();
-    state.failed = [];
+    restoreOwn(); // wraps found marks, fills state.failed
     state.sharedFailed = 0;
-    for (const m of state.marks) {
-      if (!locate(m)) state.failed.push(m);
-    }
     renderShared();
     state.banner.update();
     updatePanel();
@@ -1015,6 +1029,7 @@
   }
 
   async function doShare() {
+    if (!state.marks) return false;
     const url = buildShareUrl();
     const ok = await copyText(url);
     if (ok) toast('Share link copied');
@@ -1035,11 +1050,7 @@
   async function initRestore() {
     state.marks = await loadPage();
     state.shared = extractShareData(location.hash);
-    state.idx = buildIndex();
-    restoreOwn();
-    renderShared();
-    state.banner.update();
-    updatePanel();
+    refreshHighlights();
     scheduleRetry();
   }
 
@@ -1077,9 +1088,10 @@
   }
 
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg && msg.type === 'tma:toggle-panel') {
-      state.panel.toggle();
-    } else if (msg && msg.type === 'tma:command') {
+    if (!msg) return sendResponse({ ok: false });
+    if (msg.type === 'tma:toggle-panel') {
+      if (state.panel) state.panel.toggle();
+    } else if (msg.type === 'tma:command') {
       if (msg.cmd === 'comment') createMarkFromSelection();
       else if (msg.cmd === 'share') doShare();
     }
@@ -1088,7 +1100,7 @@
 
   let storageDebounce = null;
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes[STORE_KEY]) return;
+    if (area !== 'local' || !changes[STORE_KEY] || !state.panel) return;
     clearTimeout(storageDebounce);
     storageDebounce = setTimeout(async () => {
       state.marks = await loadPage();
