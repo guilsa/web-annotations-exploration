@@ -7,7 +7,7 @@ no dependencies — load each folder as a temporary add-on in Firefox.
 
 | Variant | Sharing mechanism | Where comments live |
 |---|---|---|
-| `version_a` — **Linkshare** ✅ done | Comments embedded in the URL fragment (`#…&tmc=<base64 JSON>`). The link *is* the database. | Link (offline, no server) + `browser.storage.local` per page |
+| `version_a` — **Linkshare** ✅ done + e2e-verified | Comments embedded in the URL fragment (`#…&tmc=<base64 JSON>`). The link *is* the database. | Link (offline, no server) + `browser.storage.local` per page |
 | `version_b` — **Pairshare** (next) | Live P2P sync between two browsers over a WebRTC DataChannel. Signaling is copy-paste of an invite/join code (public STUN default, LAN works without it). | Both browsers' local storage, synced in real time |
 | `version_c` — **Pinshare** (after) | Publish the page's comments as a standalone HTML "comment sheet" to IPFS via the public `api.ipfs.io` gateway. Permanent content-addressed link; the sheet renders even without the extension. | IPFS (content-addressed) + local storage |
 
@@ -24,22 +24,24 @@ class-based vs multi-file; different UIs, storage keys, colors).
 ## Layout
 
 ```
-version_a/  manifest.json background.js content.js icons/  (complete)
+version_a/  manifest.json browser-shim.js background.js content.js icons/  (complete)
 version_b/  (icons only so far)
 version_c/  (icons only so far)
 tools/make-icons.js   dependency-free PNG icon generator (pure node zlib)
 tests/fake-dom.js     minimal fake DOM for unit-testing content-script core
-tests/run-tests.js    test runner:  node tests/run-tests.js a|b|c|all
+tests/run-tests.js    unit test runner:  node tests/run-tests.js a|b|c|all
+harness/              Playwright e2e harness (pnpm; loads the real add-on in Chromium)
 check_in.md           session check-ins
 ```
 
-## Status / next session
+## Status
 
-- [x] A: core + share link + tests (19 passing)
+- [x] A: core + share link + 19 unit tests + 10 Playwright e2e tests (local page
+      **and live Wikipedia**), all passing. Fixed in the process: missing
+      `openEditor`, no-persist-on-create, close-then-read-null bugs, off-screen
+      editor placement, shared-mark retry, boot races.
 - [ ] B: core (4 marker colors) + Pair overlay (RTCPeerConnection invite/join,
       full-state merge on each change, status display, end session)
 - [ ] C: core + comment list widget + Publish to IPFS (background fetch with
       gateway fallbacks) + comment-sheet detection/import
 - [ ] READMEs for B and C; final top-level polish
-
-Budget note: 2h max per work session (see `check_in.md`).

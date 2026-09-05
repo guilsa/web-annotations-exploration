@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Textmarker harness page</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 24px auto; line-height: 1.5; }
+  p { margin: 12px 0; }
+</style>
+</head>
+<body>
+  <h1 id="h1">Textmarker harness page</h1>
+  <p id="p1">The quick brown fox jumps over the lazy dog, and then it goes home to sleep in the warm barn by the river.</p>
+  <p id="p2">Second paragraph with <b>bold inline</b> text and <i>italics</i> to exercise wrapper splitting across inline tags.</p>
+  <p id="p3">Third paragraph, plain and simple, used for cross-paragraph selections in the automated harness.</p>
+  <div id="async-holder"></div>
+  <script>
+    setTimeout(function () {
+      var d = document.createElement('p');
+      d.id = 'p4';
+      d.textContent = 'Async paragraph that appears after initial load.';
+      document.getElementById('async-holder').appendChild(d);
+    }, 700);
+  </script>
+</body>
+</html>
