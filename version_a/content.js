@@ -74,7 +74,16 @@
       if (cands.length > 500) break;
     }
     if (!cands.length) return null;
-    if (cands.length === 1) return [cands[0].rawS, cands[0].rawE];
+    // Squeezed search starts at the first non-space char; re-attach any
+    // leading whitespace the saved quote had.
+    const finish = (c) => {
+      const lead = (quote.match(/^\s+/) || [''])[0].length;
+      let rs = c.rawS;
+      let g = lead;
+      while (g-- > 0 && rs > 0 && /\s/.test(text[rs - 1])) rs--;
+      return [rs, c.rawE];
+    };
+    if (cands.length === 1) return finish(cands[0]);
 
     const ctxOk = (bi) => {
       const before = squeeze(stext.slice(Math.max(0, bi - 40), bi));
@@ -97,15 +106,15 @@
     // Tier A: saved context matches inside the window.
     if (hasCtx) {
       const c = closest((x) => ctxOk(x.bi) && inWindow(x));
-      if (c) return [c.rawS, c.rawE];
+      if (c) return finish(c);
       // Tier C: context matches, but outside the window (big insertion/deletion).
       const c2 = closest((x) => ctxOk(x.bi));
-      if (c2) return [c2.rawS, c2.rawE];
+      if (c2) return finish(c2);
     }
     // Tier B: long quotes disambiguate themselves — closest in window.
     if (sq.length >= 20) {
       const c = closest(inWindow);
-      if (c) return [c.rawS, c.rawE];
+      if (c) return finish(c);
     }
     return null;
   }

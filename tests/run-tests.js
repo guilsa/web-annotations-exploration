@@ -135,6 +135,14 @@ function testA() {
     eq(P.findOffsets(text, mark), [12, 17]);
   });
 
+  test('pure: findOffsets re-attaches leading whitespace of the quote', () => {
+    const text = 'one two three four five';
+    // quote starts with a space; saved offset is stale (page changed)
+    const mark = { quote: ' three four', offset: 999, pre: '', post: '' };
+    eq(P.findOffsets(text, mark), [7, 18]);
+    eq(text.slice(7, 18), ' three four');
+  });
+
   test('pure: b64 unicode round-trip', () => {
     const s = 'héllo wörld — 日本語 📝';
     eq(P.b64dec(P.b64enc(s)), s);
@@ -328,11 +336,160 @@ function testA() {
 }
 
 /* ------------------------------------------------------------------ */
+/* VERSION B                                                           */
+/* ------------------------------------------------------------------ */
+
+function testB() {
+  section('version_b');
+  const file = path.join(__dirname, '..', 'version_b', 'content.js');
+  const { doc, api: dom } = loadContentScript(file, '__TMB_TEST__', '__TMB_DOM');
+  const P = globalThis.__TMB_PURE;
+
+  test('pure: b64 unicode round-trip', () => {
+    const s = 'héllo wörld — 日本語 📝';
+    eq(P.b64dec(P.b64enc(s)), s);
+  });
+
+  test('pure: sdp code round-trip (whitespace tolerated)', () => {
+    const sdp = 'v=0\r\n-0.0.0.0 IN IP4 127.0.0.1\r\nsession=tm\r\nm=application 9 UDP/TLS/RTP/SAVPF webrtcdatachannel\r\n';
+    const code = P.sdpToCode(sdp);
+    assert(/^[A-Za-z0-9+/=]+$/.test(code), 'code is base64');
+    eq(P.codeToSdp(code), sdp);
+    // codes pasted through textareas get newlines — they must be tolerated
+    eq(P.codeToSdp(code.replace(/([A-Za-z0-9+/=]{40})/g, '$1\n')), sdp);
+  });
+
+  const mk = (id, note, ts) => ({ id, quote: 'q' + id, note, ts, offset: 0, pre: '', post: '', author: 'me' });
+
+  test('pure: mergeMarks adds new remote marks', () => {
+    const local = [mk('a', 'A', 100)];
+    const remote = [mk('a', 'A', 100), mk('b', 'B', 200)];
+    const r = P.mergeMarks(local, remote, null);
+    eq(r.added, 1);
+    eq(r.marks.map((m) => m.id).sort(), ['a', 'b']);
+  });
+
+  test('pure: mergeMarks updates note when remote is newer', () => {
+    const local = [mk('a', 'old', 100)];
+    const remote = [mk('a', 'newer', 200)];
+    const r = P.mergeMarks(local, remote, null);
+    eq(r.updated, 1);
+    eq(r.marks[0].note, 'newer');
+  });
+
+  test('pure: mergeMarks keeps local note when local is newer', () => {
+    const local = [mk('a', 'mine-newer', 300)];
+    const remote = [mk('a', 'theirs-older', 200)];
+    const r = P.mergeMarks(local, remote, null);
+    eq(r.updated, 0);
+    eq(r.marks[0].note, 'mine-newer');
+  });
+
+  test('pure: mergeMarks first exchange never deletes', () => {
+    const local = [mk('a', 'A', 100), mk('c', 'C', 300)];
+    const remote = [mk('a', 'A', 100)]; // peer has no "c" yet
+    const r = P.mergeMarks(local, remote, null);
+    eq(r.removed, []);
+    eq(r.marks.map((m) => m.id).sort(), ['a', 'c']);
+  });
+
+  test('pure: mergeMarks deletes marks the peer removed', () => {
+    const local = [mk('a', 'A', 100), mk('c', 'C', 300)];
+    const lastRemote = ['a', 'c']; // peer had "c" in its previous state
+    const remote = [mk('a', 'A', 100)]; // now gone
+    const r = P.mergeMarks(local, remote, lastRemote);
+    eq(r.removed, ['c']);
+    eq(r.marks.map((m) => m.id), ['a']);
+  });
+
+  test('pure: mergeMarks does not delete marks peer never saw', () => {
+    const local = [mk('a', 'A', 100), mk('c', 'C', 300)];
+    const lastRemote = ['a']; // peer never had "c"
+    const remote = [mk('a', 'A', 100)];
+    const r = P.mergeMarks(local, remote, lastRemote);
+    eq(r.removed, []);
+    eq(r.marks.length, 2);
+  });
+
+  test('pure: findOffsets re-locates after shift', () => {
+    const mark = { quote: 'gamma delta', offset: 11, pre: 'beta ', post: '' };
+    const modified = 'Alpha NEW WORDS inserted beta gamma delta.';
+    eq(P.findOffsets(modified, mark), [30, 41]);
+  });
+
+  /* ---------- DOM (fake) ---------- */
+
+  function makePage() {
+    const { el } = require('./fake-dom');
+    const i = el(doc, 'i', 'italics');
+    const p1 = el(doc, 'p', 'The quick brown fox jumps over the lazy dog. ', i, ' and home.');
+    doc.body = el(doc, 'body', p1);
+    return { p1 };
+  }
+  function idx() {
+    const core = new dom.Core(doc);
+    return core.index();
+  }
+  function core() {
+    return new dom.Core(doc);
+  }
+
+  test('dom: core.index concatenates text', () => {
+    makePage();
+    const ix = idx();
+    eq(ix.text, 'The quick brown fox jumps over the lazy dog. italics and home.');
+  });
+
+  test('dom: wrap/unwrap with color attr', () => {
+    makePage();
+    const c = core();
+    const ix = idx();
+    const s = 4, e = 8; // "ick "
+    const a = c.nodeAt(ix.nodes, s);
+    const b = c.nodeAt(ix.nodes, e);
+    const range = doc.createRange();
+    range.setStart(a.node, s - a.start);
+    range.setEnd(b.node, e - b.start);
+    const w = dom.D.wrap(doc, range, 'x9', 'blue');
+    assert(w.length >= 1, 'wrappers');
+    assert(doc.body.querySelectorAll('[data-tmb-id="x9"]').length >= 1, 'wrapped');
+    eq(doc.body.textContent, 'The quick brown fox jumps over the lazy dog. italics and home.');
+    dom.D.unwrap(doc, 'x9');
+    eq(doc.body.querySelectorAll('[data-tmb-id]').length, 0);
+    eq(doc.body.textContent, 'The quick brown fox jumps over the lazy dog. italics and home.');
+  });
+
+  test('dom: locate round-trip after text shift', () => {
+    makePage();
+    const c = core();
+    const ix = idx();
+    const s = 15, e = 25;
+    const mark = {
+      id: 'm', quote: ix.text.slice(s, e),
+      pre: ix.text.slice(Math.max(0, s - 40), s),
+      post: ix.text.slice(e, e + 40), offset: s,
+    };
+    const { el } = require('./fake-dom');
+    const p1 = doc.body.childNodes[0];
+    p1.insertBefore(doc.createTextNode('Prepended sentence. '), p1.childNodes[0]);
+    const ix2 = c.index();
+    const range = c.locate(mark, ix2);
+    assert(range, 'located after shift');
+    const segS = ix2.nodes.find((x) => x.node === range.startContainer);
+    const segE = ix2.nodes.find((x) => x.node === range.endContainer);
+    const rawS = segS.start + range.startOffset;
+    const rawE = segE.start + range.endOffset;
+    eq(ix2.text.slice(rawS, rawE), mark.quote);
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
 const which = process.argv[2] || 'a';
 if (which === 'a' || which === 'all') testA();
+if (which === 'b' || which === 'all') testB();
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 if (failed) process.exit(1);
