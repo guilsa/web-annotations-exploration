@@ -8,7 +8,7 @@ no dependencies — load each folder as a temporary add-on in Firefox.
 | Variant | Sharing mechanism | Where comments live |
 |---|---|---|
 | `version_a` — **Linkshare** ✅ done + e2e-verified | Comments embedded in the URL fragment (`#…&tmc=<base64 JSON>`). The link *is* the database. | Link (offline, no server) + `browser.storage.local` per page |
-| `version_b` — **Pairshare** (next) | Live P2P sync between two browsers over a WebRTC DataChannel. Signaling is copy-paste of an invite/join code (public STUN default, LAN works without it). | Both browsers' local storage, synced in real time |
+| `version_b` — **Pairshare** ✅ done + e2e-verified (incl. real WebRTC session) | Live P2P sync between two browsers over a WebRTC DataChannel. Signaling is copy-paste of an invite/join code (public STUN default, LAN works without it). | Both browsers' local storage, synced in real time |
 | `version_c` — **Pinshare** (after) | Publish the page's comments as a standalone HTML "comment sheet" to IPFS via the public `api.ipfs.io` gateway. Permanent content-addressed link; the sheet renders even without the extension. | IPFS (content-addressed) + local storage |
 
 All variants share the same core idea (simpler than the reference):
@@ -25,7 +25,7 @@ class-based vs multi-file; different UIs, storage keys, colors).
 
 ```
 version_a/  manifest.json browser-shim.js background.js content.js icons/  (complete)
-version_b/  (icons only so far)
+version_b/  manifest.json browser-shim.js background.js content.js icons/  (complete)
 version_c/  (icons only so far)
 tools/make-icons.js   dependency-free PNG icon generator (pure node zlib)
 tests/fake-dom.js     minimal fake DOM for unit-testing content-script core
@@ -40,8 +40,13 @@ check_in.md           session check-ins
       **and live Wikipedia**), all passing. Fixed in the process: missing
       `openEditor`, no-persist-on-create, close-then-read-null bugs, off-screen
       editor placement, shared-mark retry, boot races.
-- [ ] B: core (4 marker colors) + Pair overlay (RTCPeerConnection invite/join,
-      full-state merge on each change, status display, end session)
+- [x] B: core with 4 marker colors + Pair overlay (RTCPeerConnection
+      invite/join, full-state merge with tombstones, status display, end
+      session) + 12 unit tests + 7 Playwright e2e tests, all passing — the
+      e2e runs a real WebRTC DataChannel session between two tabs and verifies
+      live add / edit / delete sync. Fixed in the process: `core.ui` never
+      assigned (editor never opened), wrong-`this` in editor open, panel tab
+      visibility in the harness.
 - [ ] C: core + comment list widget + Publish to IPFS (background fetch with
       gateway fallbacks) + comment-sheet detection/import
-- [ ] READMEs for B and C; final top-level polish
+- [ ] READMEs for C; final top-level polish
