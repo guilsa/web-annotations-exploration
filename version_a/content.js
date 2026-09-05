@@ -182,10 +182,11 @@
     shared: null,   // shared payload from URL, or null
     idx: null,      // last text index {text, nodes}
     failed: [],     // own marks that could not be restored
-    sharedFailed: 0,
+    sharedFailed: [], // shared marks that could not be restored yet
     retry: 0,
     maxRetries: 6,
     bannerDismissed: false,
+    lastShareUrl: null, // set by doShare (also readable from the page for tests)
     doc: document,
   };
 
@@ -624,10 +625,15 @@
     if (!wrappers.length) return;
     state.marks.push(mark);
     sel.removeAllRanges();
+    savePage(); // persist immediately; the note can still be edited via the box
     openEditor(mark, wrappers[0]);
   }
 
   /* ---------------- editor (comment popover) ---------------- */
+
+  function openEditor(mark, anchorEl) {
+    if (state.editor) state.editor.open(mark, anchorEl);
+  }
 
   function buildEditor() {
     const root = host('editor');
@@ -667,18 +673,20 @@
     };
 
     const doSave = async () => {
-      if (!current) return;
-      current.note = ta.value;
-      current.ts = Date.now();
-      state.editor.close();
+      const mark = current;
+      if (!mark) return;
+      mark.note = ta.value;
+      mark.ts = Date.now();
+      state.editor.close(); // close() nulls the shared `current` — keep a local ref
       await savePage();
-      flash(current.id);
+      flash(mark.id);
     };
     const doDelete = async () => {
-      if (!current) return;
+      const mark = current;
+      if (!mark) return;
       state.editor.close();
-      state.marks = state.marks.filter((m) => m.id !== current.id);
-      unwrapAll(current.id);
+      state.marks = state.marks.filter((m) => m.id !== mark.id);
+      unwrapAll(mark.id);
       await savePage();
       updatePanel();
     };
@@ -708,9 +716,12 @@
       return;
     }
     const w = 340, hgt = box.offsetHeight || 180;
-    let left = Math.min(Math.max(8, rect.left), window.innerWidth - w - 8);
+    // Prefer below the anchor, else above — then clamp into the viewport
+    // (the anchor may be far off-screen on long pages).
     let top = rect.bottom + 8;
-    if (top + hgt > window.innerHeight - 8) top = Math.max(8, rect.top - hgt - 8);
+    if (top + hgt > window.innerHeight - 8) top = rect.top - hgt - 8;
+    top = Math.max(8, Math.min(top, window.innerHeight - hgt - 8));
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - w - 8));
     box.style.left = left + 'px';
     box.style.top = top + 'px';
   }
@@ -776,9 +787,10 @@
     state.card = { show, hide, pinned: () => pinned };
 
     edit.addEventListener('click', () => {
-      if (!current) return;
+      const cur = current; // hide() nulls `current` — capture first
+      if (!cur) return;
       hide();
-      const mark = current.mark;
+      const mark = cur.mark;
       const el = state.doc.querySelector('[' + ID_ATTR + '="' + mark.id + '"]');
       openEditor(mark, el);
     });
@@ -861,9 +873,10 @@
     const rect = anchorEl.getBoundingClientRect();
     const w = box.offsetWidth || 300;
     const hgt = box.offsetHeight || 120;
-    let left = Math.min(Math.max(8, rect.left), window.innerWidth - w - 8);
     let top = rect.bottom + 8;
-    if (top + hgt > window.innerHeight - 8) top = Math.max(8, rect.top - hgt - 8);
+    if (top + hgt > window.innerHeight - 8) top = rect.top - hgt - 8;
+    top = Math.max(8, Math.min(top, window.innerHeight - hgt - 8));
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - w - 8));
     box.style.left = left + 'px';
     box.style.top = top + 'px';
   }
@@ -871,11 +884,12 @@
   /* ---------------- shared layer ---------------- */
 
   function renderShared() {
+    state.sharedFailed = [];
     if (!state.shared) return;
     for (const m of state.shared.marks) {
       const range = locate(m);
       if (!range) {
-        state.sharedFailed++;
+        state.sharedFailed.push(m);
         continue;
       }
       wrapRange(range, 's:' + m.id, true);
@@ -902,6 +916,10 @@
         if (await importSharedMark(m)) n++;
       }
       state.shared = null;
+      // Clean the tmc= fragment so the shared layer doesn't reappear on reload.
+      try {
+        history.replaceState(null, '', location.pathname + location.search);
+      } catch (_) { /* ignore */ }
       refreshHighlights();
       toast(n + ' shared comment(s) imported to your page');
     });
@@ -917,7 +935,7 @@
           return;
         }
         const total = state.shared.marks.length;
-        const ok = total - state.sharedFailed;
+        const ok = total - state.sharedFailed.length;
         label.textContent = '📬 ' + ok + ' of ' + total +
           ' shared comments from ' + (state.shared.author || 'a friend') +
           (state.shared.title ? ' on “' + state.shared.title + '”' : '');
@@ -949,8 +967,7 @@
     clearHighlights();
     state.idx = buildIndex();
     restoreOwn(); // wraps found marks, fills state.failed
-    state.sharedFailed = 0;
-    renderShared();
+    renderShared(); // also resets state.sharedFailed
     state.banner.update();
     updatePanel();
   }
@@ -1031,6 +1048,11 @@
   async function doShare() {
     if (!state.marks) return false;
     const url = buildShareUrl();
+    state.lastShareUrl = url;
+    try {
+      // Test hook: attributes are visible across worlds (JS globals are not).
+      state.doc.documentElement.setAttribute('data-tma-last-share', url);
+    } catch (_) { /* ignore */ }
     const ok = await copyText(url);
     if (ok) toast('Share link copied');
     return ok;
@@ -1055,11 +1077,10 @@
   }
 
   function scheduleRetry() {
-    if (!state.failed.length) return;
+    if (!state.failed.length && !state.sharedFailed.length) return;
     if (state.retry >= state.maxRetries) return;
     state.retry++;
     setTimeout(() => {
-      const before = state.failed.length;
       state.idx = buildIndex();
       const still = [];
       for (const m of state.failed) {
@@ -1068,7 +1089,15 @@
         else still.push(m);
       }
       state.failed = still;
+      const stillS = [];
+      for (const m of state.sharedFailed) {
+        const r = locate(m);
+        if (r) wrapRange(r, 's:' + m.id, true);
+        else stillS.push(m);
+      }
+      state.sharedFailed = stillS;
       updatePanel();
+      if (state.banner) state.banner.update();
       scheduleRetry();
     }, 2500);
   }
@@ -1139,6 +1168,11 @@
     state.doc.addEventListener('selectionchange', onSelectionChange);
     state.doc.addEventListener('keydown', onKey);
     await initRestore();
+    updatePill(); // in case a selection already existed when we booted
+    // Ready marker (also a useful hook for tests / other scripts).
+    try {
+      state.doc.documentElement.setAttribute('data-tma-ready', '');
+    } catch (_) { /* ignore */ }
   }
 
   if (typeof globalThis !== 'undefined' && globalThis.__TMA_TEST__) {
