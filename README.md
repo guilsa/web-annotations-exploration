@@ -9,7 +9,7 @@ no dependencies — load each folder as a temporary add-on in Firefox.
 |---|---|---|
 | `version_a` — **Linkshare** ✅ done + e2e-verified | Comments embedded in the URL fragment (`#…&tmc=<base64 JSON>`). The link *is* the database. | Link (offline, no server) + `browser.storage.local` per page |
 | `version_b` — **Pairshare** ✅ done + e2e-verified (incl. real WebRTC session) | Live P2P sync between two browsers over a WebRTC DataChannel. Signaling is copy-paste of an invite/join code (public STUN default, LAN works without it). | Both browsers' local storage, synced in real time |
-| `version_c` — **Pinshare** (after) | Publish the page's comments as a standalone HTML "comment sheet" to IPFS via the public `api.ipfs.io` gateway. Permanent content-addressed link; the sheet renders even without the extension. | IPFS (content-addressed) + local storage |
+| `version_c` — **Pinshare** (after) | Publish the page's comments as a standalone HTML "comment sheet". Two lanes: (1) to a **local IPFS node** (`/api/v0/add` on localhost, default 5001) → content-addressed `ipfs.io/ipfs/<cid>` link, (2) always-available **sheet file** download for any transfer channel. The sheet renders even without the extension. | Local storage + local IPFS node (optional) + the sheet file itself |
 
 All variants share the same core idea (simpler than the reference):
 
@@ -47,6 +47,14 @@ check_in.md           session check-ins
       live add / edit / delete sync. Fixed in the process: `core.ui` never
       assigned (editor never opened), wrong-`this` in editor open, panel tab
       visibility in the harness.
-- [ ] C: core + comment list widget + Publish to IPFS (background fetch with
-      gateway fallbacks) + comment-sheet detection/import
+- [ ] C (revised 2026-09-05): core + comment list widget + sheet generation
+      (`</script>`-safe JSON island, round-trip property tests) + publish to a
+      local Kubo node if present (probed on localhost, zero-config default 5001)
+      + sheet-file download lane + sheet detection/import. Test arch: mock IPFS
+      in the harness (valid deterministic CIDv1s via sha256 → raw codec →
+      base32), opt-in js-ipfsd-ctl contract test, opt-in read-only public
+      gateway smoke. NOTE: the original "public `api.ipfs.io/api/v0/add`" plan
+      is dead — probed: `ipfs.io/api/v0/add` → HTTP 410 "Kubo RPC is not
+      here"; the public gateway is retrieval-only, and Kubo RPC is
+      admin/localhost-bound by design.
 - [ ] READMEs for C; final top-level polish

@@ -25,3 +25,18 @@ Format: `HH:MM — status` (EDT). Budget: 2h (2026-09-04 12:59), then lifted by 
   never opened), wrong-`this` in editor open, `ui.setStatus` target, leading-
   whitespace drop in squeezed matching (A+B). READMEs written. Committing and
   stopping (user). Next session: version_c (Pinshare / IPFS).
+- 00:30 (09-05) — version_c plan pivot, research + reference clones done. Web
+  search agent found (and I verified live) that the public IPFS gateway is
+  retrieval-only: POST ipfs.io/api/v0/add → HTTP 410 "Kubo RPC is not here";
+  Kubo /api/v0 is admin/localhost-bound by design. So "publish via public
+  gateway" is dead. Revised Pinshare: (1) publish sheet to a LOCAL Kubo node
+  if one is running (zero-config probe of localhost:5001, user-settable port)
+  → real CID → ipfs.io/ipfs/<cid> share link; (2) always-available fallback:
+  download the standalone sheet .html and share it any way. Test arch agreed:
+  mock IPFS in harness (valid deterministic CIDv1: sha256→raw codec 0x55→
+  base32), opt-in js-ipfsd-ctl + real kubo contract test, opt-in read-only
+  public gateway smoke; Chromium Playwright for deep e2e, optional web-ext
+  Firefox smoke later. Contract verified against /tmp/js-kubo-rpc-client:
+  POST /api/v0/add, multipart field `file`, response `Hash` = bare CID. Cloned
+  to /tmp: js-kubo-rpc-client, js-ipfsd-ctl, js-multiformats, ipfs-companion.
+  Awaiting user OK on the revised shape, then building C.
