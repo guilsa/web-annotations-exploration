@@ -141,6 +141,80 @@ await test('B2 colored mark + note survive reload', async () => {
   assert(cardText.includes('blue mark note'), 'note restored: ' + cardText.slice(0, 100));
 });
 
+// Select a [start,end) CHARACTER slice across the flattened text of `sel`,
+// walking current text nodes in DOM order. Robust after prior highlights have
+// split text nodes (selectWhole/selectSlice assume a single firstChild).
+async function selectCharSlice(pg, sel, start, end) {
+  await pg.evaluate(([sel, start, end]) => {
+    const el = document.querySelector(sel);
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let t, map = [];
+    while ((t = w.nextNode())) map.push(t);
+    const point = (o) => {
+      let off = 0;
+      for (const n of map) { if (o < off + n.data.length) return [n, o - off]; off += n.data.length; }
+      const last = map[map.length - 1]; return [last, last.data.length];
+    };
+    const [sn, so] = point(start), [en, eo] = point(end);
+    const r = document.createRange(); r.setStart(sn, so); r.setEnd(en, eo);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    document.dispatchEvent(new Event('selectionchange'));
+  }, [sel, start, end]);
+}
+async function saveEditorNote(pg, note) {
+  const ta = pg.locator('#tmb-editor textarea');
+  await ta.click();
+  await pg.keyboard.type(note, { delay: 30 });
+  await pg.locator('#tmb-editor button', { hasText: 'Save' }).click();
+  await pg.waitForFunction(() => {
+    const el = document.querySelector('#tmb-editor');
+    const b = el && el.shadowRoot && el.shadowRoot.querySelector('.editor');
+    return !b || b.style.display !== 'block';
+  });
+}
+const ownIds = (pg) => pg.evaluate(() =>
+  Array.from(document.querySelectorAll('[data-tmb-id]:not([data-tmb-id^="r:"])'))
+    .map((e) => e.getAttribute('data-tmb-id')));
+
+await test('B8 multiple marks in the SAME paragraph all render and survive', async () => {
+  // Regression: with two non-overlapping selections in one paragraph, the
+  // 2nd mark used to not render (sometimes ever). Root cause: Core.render()
+  // built idx once then wrapped every mark in a loop; wrapping mark1
+  // splitText()'d the shared text node, so mark2's locate() used the stale
+  // (truncated) node refs and threw IndexSizeError -> null -> this.failed.
+  // Different paragraphs were unaffected (disjoint text nodes). Same bug +
+  // fix as version_a T11.
+  await sw.evaluate(async () => { await chrome.storage.local.remove('tmb.pages'); });
+  await page.goto(BASE + '/');
+  await waitBooted(page);
+  // #p1: "The quick brown fox jumps over the lazy dog, and then it goes
+  //       home to sleep in the warm barn by the river." (~104 chars)
+  await selectCharSlice(page, '#p1', 0, 19);    // "The quick brown fox"
+  await page.locator('#tmb-pill .pill').waitFor({ state: 'visible', timeout: 5000 });
+  await page.locator('#tmb-pill button.go').click();
+  await page.waitForSelector('[data-tmb-id]');
+  await saveEditorNote(page, 'first');
+  await page.waitForTimeout(600); // past the storage.onChanged debounce
+
+  await selectCharSlice(page, '#p1', 40, 60);   // "dog, and then it goe"
+  await page.locator('#tmb-pill .pill').waitFor({ state: 'visible', timeout: 5000 });
+  await page.locator('#tmb-pill button.go').click();
+  await page.waitForSelector('[data-tmb-id]');
+  await saveEditorNote(page, 'second');
+  await page.waitForTimeout(600);
+
+  // Both highlights must be present right now — no reload, no retry.
+  const live = await ownIds(page);
+  assert(live.length === 2, '2nd mark in same paragraph did not render immediately: ' + JSON.stringify(live));
+
+  // Both must survive a reload too.
+  await page.reload({ waitUntil: 'load' });
+  await waitBooted(page);
+  await page.waitForSelector('[data-tmb-id]', { timeout: 8000 });
+  const after = await ownIds(page);
+  assert(after.length === 2, 'not both marks restored after reload: ' + JSON.stringify(after));
+});
+
 /* ---------------- pairing ---------------- */
 
 const p2 = await ctx.newPage();

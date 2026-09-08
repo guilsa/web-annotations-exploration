@@ -1271,26 +1271,35 @@
   Core.prototype.render = function () {
     const doc = this.doc;
     D.clearAll(doc);
-    const idx = this.index();
     this.failed = [];
     for (const m of this.marks) {
-      const r = this.locate(m, idx);
-      if (r) D.wrap(doc, r, m.id, m.color);
-      else this.failed.push(m);
+      if (!this.wrapOne(m)) this.failed.push(m);
     }
     this.scheduleRetry();
+  };
+
+  // Wrap a single mark from a FRESH index. Wrapping earlier marks splits text
+  // nodes via splitText(), which truncates the .data of the node objects an
+  // older idx still references — so locate() on a stale idx throws
+  // IndexSizeError and the mark silently fails to render. Rebuilding the
+  // index per mark is safe (highlight spans add no text, so raw page-text
+  // offsets stay identical) and only O(n) total across a page's few marks.
+  // Same root cause + fix as version_a (see wrapOne there).
+  Core.prototype.wrapOne = function (m, prefix) {
+    const idx = this.index();
+    const r = this.locate(m, idx);
+    if (!r) return false;
+    D.wrap(this.doc, r, prefix ? prefix + m.id : m.id, m.color);
+    return true;
   };
 
   Core.prototype.scheduleRetry = function () {
     if (!this.failed.length || this.retry >= this.maxRetries) return;
     this.retry++;
     setTimeout(() => {
-      const idx = this.index();
       const still = [];
       for (const m of this.failed) {
-        const r = this.locate(m, idx);
-        if (r) D.wrap(this.doc, r, m.id, m.color);
-        else still.push(m);
+        if (!this.wrapOne(m)) still.push(m);
       }
       this.failed = still;
       this.scheduleRetry();
