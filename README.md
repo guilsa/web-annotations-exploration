@@ -1,25 +1,42 @@
-# textmarker-revamped
+<div align="center">
 
-Three **simple, unique, zero-config** Firefox re-implementations of
-[Textmarker](https://github.com/underflyingbirches/Textmarker), each with a
-different *distributed* way to share page comments. Plain JS, no build step,
-no dependencies — load each folder as a temporary add-on in Firefox.
+# 🖍️ Textmarker Revamped
 
-| Variant | Sharing mechanism | Where comments live |
+**Highlight the web, comment in context, and share without an account or central database.**
+
+</div>
+
+Three deliberately different re-implementations of
+[Textmarker](https://github.com/underflyingbirches/Textmarker), each exploring
+a distributed way to share page comments. Each implementation is designed as a
+standalone browser extension written in plain JavaScript: no build step,
+dependencies, or configuration. Linkshare and Pairshare are complete and
+end-to-end tested; Pinshare is planned.
+
+## Choose how comments travel
+
+| Variant | How it shares | State |
 |---|---|---|
-| `version_a` — **Linkshare** ✅ done + e2e-verified | Comments embedded in the URL fragment (`#…&tmc=<base64 JSON>`). The link *is* the database. | Link (offline, no server) + `browser.storage.local` per page |
-| `version_b` — **Pairshare** ✅ done + e2e-verified (incl. real WebRTC session) | Live P2P sync between two browsers over a WebRTC DataChannel. Signaling is copy-paste of an invite/join code (public STUN default, LAN works without it). | Both browsers' local storage, synced in real time |
-| `version_c` — **Pinshare** (after) | Publish the page's comments as a standalone HTML "comment sheet". Two lanes: (1) to a **local IPFS node** (`/api/v0/add` on localhost, default 5001) → content-addressed `ipfs.io/ipfs/<cid>` link, (2) always-available **sheet file** download for any transfer channel. The sheet renders even without the extension. | Local storage + local IPFS node (optional) + the sheet file itself |
+| 🔗 `version_a` — **Linkshare** | Packs comments into the URL fragment. The link is the database: offline, portable, and server-free. | Ready |
+| 🤝 `version_b` — **Pairshare** | Syncs two browsers live over a WebRTC DataChannel using copy-paste invite and join codes. | Ready |
+| 📌 `version_c` — **Pinshare** | Will publish a standalone comment sheet through a local IPFS node or a downloadable HTML file. | Planned |
 
-All variants share the same core idea (simpler than the reference):
+## What they have in common
 
-1. Select text → floating pill → add a comment → colored highlight.
-2. Persist per-URL in `browser.storage.local`.
-3. Restore on revisit via fuzzy text matching (quote + context + saved offset).
-4. Hover/click a highlight → comment card (edit, delete, import).
+- Select text, add a comment, and get a colored highlight.
+- Keep comments per page in `browser.storage.local`.
+- Restore highlights after a revisit with fuzzy text matching.
+- Hover or click a highlight to read, edit, delete, or import its comment.
 
-Each variant is implemented differently on purpose (single-file IIFE vs
-class-based vs multi-file; different UIs, storage keys, colors).
+The implementations are intentionally distinct—different architecture, UI,
+storage keys, and colors—rather than three skins over the same codebase.
+
+## Try one
+
+In Firefox, open `about:debugging#/runtime/this-firefox`, choose **Load
+Temporary Add-on…**, and select `version_a/manifest.json` or
+`version_b/manifest.json`. In Chromium, enable Developer mode at
+`chrome://extensions` and load either directory unpacked.
 
 ## Layout
 
@@ -58,3 +75,9 @@ check_in.md           session check-ins
       here"; the public gateway is retrieval-only, and Kubo RPC is
       admin/localhost-bound by design.
 - [ ] READMEs for C; final top-level polish
+
+## Prior work
+
+This project is inspired by [Textmarker](https://github.com/ufb/Textmarker).
+It revisits Textmarker's highlighting and annotation workflow through
+independent implementations focused on portable, distributed sharing.
