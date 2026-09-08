@@ -1320,9 +1320,34 @@
     this.sendState();
   };
 
+  /* ---------------- page-level (light DOM) styles ---------------- */
+
+  function injectPageCSS() {
+    const doc = document;
+    if (doc.getElementById('tmb-page-css')) return;
+    // Build a rule per marker color so highlights are actually visible.
+    // Without this the .tmb-hl spans exist in the DOM (hover/click work) but
+    // have no background — they are invisible. (version_a injects the
+    // equivalent in its own injectPageCSS.)
+    let rules = '';
+    for (const name of COLOR_NAMES) {
+      const c = COLORS[name];
+      rules +=
+        '.tmb-hl[data-tmb-color="' + name + '"]{background-color:' + c.bg +
+        '!important;border-radius:2px;box-shadow:inset 0 -2px 0 ' + c.edge +
+        ';cursor:pointer;}';
+    }
+    const st = doc.createElement('style');
+    st.id = 'tmb-page-css';
+    st.setAttribute(SKIP, '');
+    st.textContent = rules;
+    (doc.head || doc.documentElement).appendChild(st);
+  }
+
   /* ---------------- boot ---------------- */
 
   async function boot() {
+    injectPageCSS();
     const doc = document;
     const core = new Core(doc);
     const pair = new Pair(core);

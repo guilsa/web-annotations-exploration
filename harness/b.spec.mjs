@@ -115,6 +115,13 @@ await test('B1 pill shows 4 color dots; picking a color + comment creates colore
   await page.waitForSelector('[data-tmb-id]');
   const color = await page.locator('[data-tmb-id]').first().getAttribute('data-tmb-color');
   assert(color === 'blue', 'highlight uses blue, got ' + color);
+  // Regression: the highlight span must be visually styled (non-transparent
+  // background). version_b used to inject no page-level CSS for .tmb-hl, so
+  // spans existed in the DOM (hover/click worked) but were invisible.
+  const bg = await page.locator('[data-tmb-id]').first().evaluate(
+    (el) => getComputedStyle(el).backgroundColor);
+  assert(bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent',
+    'highlight has no visible background (injectPageCSS missing): ' + bg);
   const editorOpen = await page.locator('#tmb-editor .editor').evaluate((el) => el.style.display === 'block');
   assert(editorOpen, 'editor opened');
   await page.locator('#tmb-editor textarea').fill('blue mark note');
