@@ -170,6 +170,46 @@ await test('B9 Edit from a pinned card hides the card (editor not behind it)', a
   await page.locator('#tmb-editor button', { hasText: 'Cancel' }).click();
 });
 
+await test('B10 first Save keeps the note (storage.onChanged reference race)', async () => {
+  // Regression: createMark pushes the mark with note:'' then saves (unawaited)
+  // and opens the editor. That save fires the debounced storage.onChanged
+  // listener (300ms) which calls core.load() -> this.marks is replaced with a
+  // structurally-cloned copy. The editor's `current` still referenced the
+  // original (now-orphaned) mark, so Save did mark.note = ... on the orphan
+  // and updateMark() serialized the new clone (note still '') — the note was
+  // silently lost. Showed up as: first Save leaves no note, Edit reopens
+  // empty; second Save worked. Same bug + fix as version_a T3 (48f4efb).
+  await sw.evaluate(async () => { await chrome.storage.local.remove('tmb.pages'); });
+  await page.goto(BASE + '/');
+  await waitBooted(page);
+  await selectWhole(page, '#p1');
+  await page.locator('#tmb-pill .pill').waitFor({ state: 'visible', timeout: 5000 });
+  await page.locator('#tmb-pill button.go').click();
+  await page.waitForSelector('[data-tmb-id]');
+  // Type the note slowly, like a human (not fill()), then pause past the
+  // 300ms storage.onChanged debounce so the race actually runs.
+  const ta = page.locator('#tmb-editor textarea');
+  await ta.click();
+  await page.keyboard.type('first note kept', { delay: 40 });
+  await page.waitForTimeout(500);
+  await page.locator('#tmb-editor button', { hasText: 'Save' }).click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tmb-editor');
+    const b = el && el.shadowRoot && el.shadowRoot.querySelector('.editor');
+    return !b || b.style.display !== 'block';
+  });
+  // The note must appear in the card immediately — no reload needed.
+  await page.locator('[data-tmb-id]').first().click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tmb-card');
+    const box = el && el.shadowRoot && el.shadowRoot.querySelector('.card');
+    return box && box.style.display === 'block';
+  }, { timeout: 5000 });
+  const note = await page.locator('#tmb-card .card .note').evaluate((el) => el.textContent);
+  assert(note === 'first note kept', 'note dropped on first Save: ' + JSON.stringify(note));
+  await page.locator('#tmb-card button', { hasText: 'Close' }).click();
+});
+
 // Select a [start,end) CHARACTER slice across the flattened text of `sel`,
 // walking current text nodes in DOM order. Robust after prior highlights have
 // split text nodes (selectWhole/selectSlice assume a single firstChild).

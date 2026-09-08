@@ -1261,6 +1261,17 @@
   };
 
   Core.prototype.updateMark = function (mark) {
+    // `this.marks` may have been replaced wholesale by the storage.onChanged
+    // listener (core.load() reloads a fresh, structurally-cloned array ~300ms
+    // after createMark's own pre-editor save). The object the editor holds
+    // (`mark`) can then be a stale reference no longer present in this.marks,
+    // so mutating mark.note would be silently dropped by the next save().
+    // Apply the note/ts onto the live entry found by id; if it was removed
+    // while editing, re-add the mark so the just-typed note is not lost.
+    // Same root cause + fix as version_a (48f4efb).
+    const live = this.marks.find((m) => m.id === mark.id);
+    if (live) { live.note = mark.note; live.ts = mark.ts; }
+    else { this.marks.push(mark); }
     this.save().then(() => this.emitChange());
   };
 

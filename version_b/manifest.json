@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Textmarker B — Pairshare",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Highlight text with 4 marker colors, attach comments, and sync them live with another browser over a direct WebRTC connection (copy-paste invite, no server).",
   "browser_specific_settings": {
     "gecko": {
