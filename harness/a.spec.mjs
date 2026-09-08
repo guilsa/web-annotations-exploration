@@ -252,7 +252,25 @@ await test('T5 Edit button opens editor with prefilled note; edit persists', asy
   assert((await cardText()).includes('REVISED: the fox leads'), 'edited note not restored');
 });
 
+await test('T6a Edit from a pinned card hides the card (editor not behind it)', async () => {
+  // Regression: clicking a highlight pins the card. The Edit button used to
+  // call hide(), which is a no-op while pinned, so the card stayed on top of
+  // the editor (the card's shadow host is appended after the editor's and
+  // they share the same z-index, so the card wins the stack). The editor
+  // opened *behind* the card and was unusable until the card was dismissed.
+  await page.locator('[data-tma-id]').first().click(); // click pins the card
+  await cardShown();
+  assert((await cardVisible()), 'card should be pinned and visible');
+  await page.locator('#tma-card button', { hasText: 'Edit' }).click();
+  assert(await editorVisible(), 'editor did not open from pinned-card Edit');
+  assert(!(await cardVisible()), 'pinned card did not hide on Edit — editor is behind it');
+  // clean up: close the editor so the next test starts clean.
+  await page.locator('#tma-editor button', { hasText: 'Cancel' }).click();
+});
+
 await test('T6 delete via editor removes the mark after reload', async () => {
+  await page.locator('[data-tma-id]').first().hover();
+  await cardShown();
   await page.locator('#tma-card button', { hasText: 'Edit' }).click();
   await page.locator('#tma-editor button', { hasText: 'Delete' }).click();
   await page.reload({ waitUntil: 'load' });

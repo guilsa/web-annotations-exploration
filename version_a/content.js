@@ -802,13 +802,20 @@
       box.style.display = 'none';
       current = null;
     };
+    // Unpin and hide in one step. `hide()` alone is a no-op while the card is
+    // pinned (clicking a highlight pins it), so action buttons that should
+    // dismiss the card must unpinned first — otherwise the card stays on top
+    // of whatever they open next (the editor opens behind it because the
+    // card's shadow host is appended after the editor's in the light DOM and
+    // they share the same z-index).
+    const dismiss = () => { pinned = false; hide(); };
 
     state.card = { show, hide, pinned: () => pinned };
 
     edit.addEventListener('click', () => {
-      const cur = current; // hide() nulls `current` — capture first
+      const cur = current; // dismiss() nulls `current` — capture first
       if (!cur) return;
-      hide();
+      dismiss();
       const mark = cur.mark;
       const el = state.doc.querySelector('[' + ID_ATTR + '="' + mark.id + '"]');
       openEditor(mark, el);
@@ -827,12 +834,9 @@
       if (r) wrapRange(r, mine.id, false);
       state.banner.update();
       updatePanel();
-      hide();
+      dismiss();
     });
-    close.addEventListener('click', () => {
-      pinned = false;
-      hide();
-    });
+    close.addEventListener('click', dismiss);
 
     // Clicking outside (not on a highlight, not inside the card) unpins.
     state.doc.addEventListener('mousedown', (e) => {
