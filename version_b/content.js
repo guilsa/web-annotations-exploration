@@ -935,20 +935,22 @@
         box.style.display = 'none';
         currentMark = null;
       };
+      // Unpin + hide in one step. `hide()` alone is a no-op while the card is
+      // pinned (clicking a highlight pins it), so action buttons that should
+      // dismiss the card must unpin first — otherwise the card stays on top
+      // of whatever they open next (the editor opens behind it because the
+      // card's shadow host is appended after the editor's in the light DOM
+      // and they share the same z-index). Same bug + fix as version_a.
+      const dismiss = () => { pinned = false; hide(); };
 
       edit.addEventListener('click', () => {
-        const mark = currentMark; // capture: hide() clears currentMark
+        const mark = currentMark; // capture: dismiss() clears currentMark
         if (!mark) return;
-        hide();
-        pinned = false;
+        dismiss();
         const el = this.doc().querySelector('[' + ID_ATTR + '="' + mark.id + '"]');
         this.editor.open(mark, el);
       });
-      close.addEventListener('click', () => {
-        pinned = false;
-        box.style.display = 'none';
-        currentMark = null;
-      });
+      close.addEventListener('click', dismiss);
 
       this.doc().addEventListener('mouseover', (e) => {
         const el = e.target;

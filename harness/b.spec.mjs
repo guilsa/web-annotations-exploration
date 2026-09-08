@@ -148,6 +148,28 @@ await test('B2 colored mark + note survive reload', async () => {
   assert(cardText.includes('blue mark note'), 'note restored: ' + cardText.slice(0, 100));
 });
 
+await test('B9 Edit from a pinned card hides the card (editor not behind it)', async () => {
+  // Regression: clicking a highlight pins the card. The Edit button used to
+  // call hide() while still pinned (a no-op), then set pinned=false AFTER —
+  // too late, the card stayed display:block. The card's shadow host is
+  // appended after the editor's and they share z-index 2147483647, so the
+  // card won the stack and the editor opened behind it. Same bug + fix as
+  // version_a T6a.
+  await page.locator('[data-tmb-id]').first().click(); // click pins the card
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tmb-card');
+    const box = el && el.shadowRoot && el.shadowRoot.querySelector('.card');
+    return box && box.style.display === 'block';
+  }, { timeout: 5000 });
+  await page.locator('#tmb-card button', { hasText: 'Edit' }).click();
+  const editorOpen = await page.locator('#tmb-editor .editor').evaluate((el) => el.style.display === 'block');
+  assert(editorOpen, 'editor did not open from pinned-card Edit');
+  const cardStillUp = await page.locator('#tmb-card .card').evaluate((el) => el.style.display === 'block');
+  assert(!cardStillUp, 'pinned card did not hide on Edit — editor is behind it');
+  // clean up: close the editor so the next test starts clean.
+  await page.locator('#tmb-editor button', { hasText: 'Cancel' }).click();
+});
+
 // Select a [start,end) CHARACTER slice across the flattened text of `sel`,
 // walking current text nodes in DOM order. Robust after prior highlights have
 // split text nodes (selectWhole/selectSlice assume a single firstChild).
