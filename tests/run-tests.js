@@ -214,6 +214,16 @@ function testA() {
     eq(doc.body.textContent, 'Hello bold world. Second paragraph text here.');
   });
 
+  test('dom: wrapRange late slice in a long text node stops at range end', () => {
+    const { el } = require('./fake-dom');
+    const text = '0123456789'.repeat(8);
+    doc.body = el(doc, 'body', el(doc, 'p', text));
+    const { range } = rawRange(60, 65);
+    const wrappers = dom.wrapRange(range, 'late', false);
+    eq(wrappers.map((w) => w.textContent), [text.slice(60, 65)]);
+    eq(doc.body.textContent, text);
+  });
+
   test('dom: wrapRange across inline element in same parent', () => {
     makePage();
     const { idx, range } = rawRange(4, 8); // "o bo"
@@ -457,6 +467,19 @@ function testB() {
     dom.D.unwrap(doc, 'x9');
     eq(doc.body.querySelectorAll('[data-tmb-id]').length, 0);
     eq(doc.body.textContent, 'The quick brown fox jumps over the lazy dog. italics and home.');
+  });
+
+  test('dom: late slice in a long text node stops at range end', () => {
+    const { el } = require('./fake-dom');
+    const text = 'abcdefghij'.repeat(8);
+    doc.body = el(doc, 'body', el(doc, 'p', text));
+    const c = core();
+    const range = doc.createRange();
+    range.setStart(doc.body.childNodes[0].childNodes[0], 60);
+    range.setEnd(doc.body.childNodes[0].childNodes[0], 65);
+    const wrappers = dom.D.wrap(doc, range, 'late', 'green');
+    eq(wrappers.map((w) => w.textContent), [text.slice(60, 65)]);
+    eq(doc.body.textContent, text);
   });
 
   test('dom: locate round-trip after text shift', () => {

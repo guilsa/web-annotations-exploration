@@ -2,14 +2,14 @@
 
 # 🖍️ Web Annotations
 
-**Highlight the web, comment in context, and share without an account or central database.**
+**Highlight, comment and share without an account or central database.**
 
 </div>
 
 Three approaches to sharing page comments, each designed as a standalone
 browser extension. Plain JavaScript, with no build step or dependencies.
 
-https://github.com/user-attachments/assets/822fd001-e806-40ae-9e4d-2a3f1f91a77e
+https://github.com/user-attachments/assets/2d68673b-de93-4845-aefa-49ecaff172fb
 
 ## Variants
 

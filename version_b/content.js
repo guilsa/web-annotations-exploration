@@ -402,7 +402,8 @@
       for (const [tn, s, e] of plan) {
         let mid = tn;
         if (s > 0) mid = tn.splitText(s);
-        if (e < mid.data.length) mid.splitText(e - s);
+        const selectedLength = e - s;
+        if (selectedLength < mid.data.length) mid.splitText(selectedLength);
         const last = wrappers[wrappers.length - 1];
         let w;
         if (last && last.parentNode === mid.parentNode && last.nextSibling === mid) {
