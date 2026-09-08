@@ -906,13 +906,9 @@
     state.sharedFailed = [];
     if (!state.shared) return;
     for (const m of state.shared.marks) {
-      const range = locate(m);
-      if (!range) {
-        state.sharedFailed.push(m);
-        continue;
-      }
-      wrapRange(range, 's:' + m.id, true);
+      if (!wrapOne(m, 's:')) state.sharedFailed.push(m);
     }
+    state.idx = buildIndex();
   }
 
   function buildBanner() {
@@ -1079,13 +1075,26 @@
 
   /* ---------------- restoration ---------------- */
 
+  // Wrap a single mark from a FRESH index. Wrapping earlier marks splits text
+  // nodes via splitText(), which truncates the .data of the node objects an
+  // older state.idx still references — so locate()/rawToRange() on a stale idx
+  // throws IndexSizeError and the mark silently fails to render. Rebuilding
+  // the index per mark is safe (highlight spans add no text, so raw page-text
+  // offsets stay identical) and only O(n) total across a page's few marks.
+  function wrapOne(m, prefix) {
+    state.idx = buildIndex();
+    const r = locate(m);
+    if (!r) return false;
+    wrapRange(r, prefix ? prefix + m.id : m.id, !!prefix);
+    return true;
+  }
+
   function restoreOwn() {
     state.failed = [];
     for (const m of state.marks) {
-      const r = locate(m);
-      if (r) wrapRange(r, m.id, false);
-      else state.failed.push(m);
+      if (!wrapOne(m)) state.failed.push(m);
     }
+    state.idx = buildIndex();
   }
 
   async function initRestore() {
@@ -1100,21 +1109,17 @@
     if (state.retry >= state.maxRetries) return;
     state.retry++;
     setTimeout(() => {
-      state.idx = buildIndex();
       const still = [];
       for (const m of state.failed) {
-        const r = locate(m);
-        if (r) wrapRange(r, m.id, false);
-        else still.push(m);
+        if (!wrapOne(m)) still.push(m);
       }
       state.failed = still;
       const stillS = [];
       for (const m of state.sharedFailed) {
-        const r = locate(m);
-        if (r) wrapRange(r, 's:' + m.id, true);
-        else stillS.push(m);
+        if (!wrapOne(m, 's:')) stillS.push(m);
       }
       state.sharedFailed = stillS;
+      state.idx = buildIndex();
       updatePanel();
       if (state.banner) state.banner.update();
       scheduleRetry();

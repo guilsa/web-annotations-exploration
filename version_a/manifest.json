@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Textmarker A — Linkshare",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Highlight text, attach comments, and share them by copying a link. Zero config, no servers: the URL is the database.",
   "browser_specific_settings": {
     "gecko": {

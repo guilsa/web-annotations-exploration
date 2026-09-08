@@ -103,6 +103,51 @@ async function selectSlice(page, sel, start, end) {
     document.dispatchEvent(new Event('selectionchange')); // safety net
   }, [sel, start, end]);
 }
+// Select a [start,end) CHARACTER slice across the flattened text of `sel`,
+// walking current text nodes in DOM order. Robust after prior highlights have
+// split text nodes (the plain selectSlice above assumes a single firstChild).
+async function selectCharSlice(page, sel, start, end) {
+  await page.evaluate(([sel, start, end]) => {
+    const el = document.querySelector(sel);
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let t, map = [];
+    while ((t = w.nextNode())) map.push(t);
+    const point = (o) => {
+      let off = 0;
+      for (const n of map) { if (o < off + n.data.length) return [n, o - off]; off += n.data.length; }
+      const last = map[map.length - 1]; return [last, last.data.length];
+    };
+    const [sn, so] = point(start), [en, eo] = point(end);
+    const r = document.createRange(); r.setStart(sn, so); r.setEnd(en, eo);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+    document.dispatchEvent(new Event('selectionchange'));
+  }, [sel, start, end]);
+}
+async function saveEditorNote(page, note) {
+  const ta = page.locator('#tma-editor textarea');
+  await ta.click();
+  await page.keyboard.type(note, { delay: 30 });
+  await page.locator('#tma-editor button', { hasText: 'Save' }).click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tma-editor');
+    const b = el && el.shadowRoot && el.shadowRoot.querySelector('.editor');
+    return !b || b.style.display !== 'block';
+  });
+}
+const ownIds = () => page.evaluate(() =>
+  Array.from(document.querySelectorAll('[data-tma-id]:not([data-tma-id^="s:"])'))
+    .map((e) => e.getAttribute('data-tma-id')));
+async function cardNoteFor(page, id) {
+  await page.locator(`[data-tma-id="${id}"]`).first().click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tma-card');
+    const b = el && el.shadowRoot && el.shadowRoot.querySelector('.card');
+    return b ? b.style.display === 'block' : false;
+  }, { timeout: 5000 });
+  const note = await page.locator('#tma-card .card .note').evaluate((el) => el.textContent);
+  await page.locator('#tma-card button', { hasText: 'Close' }).click();
+  return note;
+}
 /** Wait until the content script has fully booted (storage loaded, restore done). */
 async function waitBooted(page, timeout = 10000) {
   await page.waitForFunction(
@@ -226,6 +271,51 @@ await test('T7 async-loaded paragraph can be marked and restores', async () => {
   await page.reload({ waitUntil: 'load' });
   await page.waitForSelector('[data-tma-id]', { timeout: 8000 });
   eq(await page.locator('[data-tma-id]').count(), 1, 'async mark not restored');
+});
+
+await test('T11 multiple marks in the SAME paragraph all render and survive', async () => {
+  // Regression: with two non-overlapping selections in one paragraph, the
+  // 2nd mark used to not render (sometimes ever) and only "reappear nilly
+  // willy" on the retry loop. Root cause: restoreOwn built state.idx once,
+  // then wrapping mark1 splitText()'d the shared text node; mark2's
+  // locate()/rawToRange() then used the stale (truncated) node refs and
+  // threw IndexSizeError -> null -> state.failed. Different paragraphs were
+  // unaffected because their text nodes were never split.
+  await sw.evaluate(async () => { await chrome.storage.local.remove('tma.pages'); });
+  await page.goto(BASE + '/');
+  await waitBooted(page);
+  // #p1: "The quick brown fox jumps over the lazy dog, and then it goes
+  //       home to sleep in the warm barn by the river." (~104 chars)
+  await selectCharSlice(page, '#p1', 0, 19);    // "The quick brown fox"
+  await pill.waitFor({ state: 'visible', timeout: 5000 });
+  await page.locator('#tma-pill button').click();
+  await page.waitForSelector('[data-tma-id]');
+  await saveEditorNote(page, 'first');
+  // pause past the storage.onChanged debounce so the restore race also runs
+  await page.waitForTimeout(600);
+
+  await selectCharSlice(page, '#p1', 40, 60);   // "dog, and then it goe"
+  await pill.waitFor({ state: 'visible', timeout: 5000 });
+  await page.locator('#tma-pill button').click();
+  await page.waitForSelector('[data-tma-id]');
+  await saveEditorNote(page, 'second');
+  await page.waitForTimeout(600);
+
+  // Both highlights must be present right now — no reload, no retry.
+  const live = await ownIds();
+  eq(live.length, 2, '2nd mark in same paragraph did not render immediately: ' + JSON.stringify(live));
+
+  // And each one shows its own note (click pins the card).
+  const notes = {};
+  for (const id of live) notes[id] = await cardNoteFor(page, id);
+  const values = Object.values(notes).sort();
+  eq(values, ['first', 'second'], 'notes mixed up: ' + JSON.stringify(notes));
+
+  // Both must survive a reload too.
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForSelector('[data-tma-id]', { timeout: 8000 });
+  const after = await ownIds();
+  eq(after.length, 2, 'not both marks restored after reload: ' + JSON.stringify(after));
 });
 
 /* ---------------- sharing ---------------- */
