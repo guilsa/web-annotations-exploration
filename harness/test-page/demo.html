@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Notes — The web is a shared margin</title>
+<style>
+  :root {
+    color-scheme: light;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #20211f;
+    background: #eeeae2;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #eeeae2; }
+  .topbar {
+    height: 58px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 34px; border-bottom: 1px solid #d5d0c6; background: rgba(250,248,243,.94);
+    color: #585951; font-size: 12px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .mark { display: flex; align-items: center; gap: 9px; color: #20211f; }
+  .mark::before { content: ""; width: 19px; height: 19px; border-radius: 50% 48% 52% 44%; background: #f6b93b; }
+  main {
+    width: min(820px, calc(100% - 44px)); margin: 28px auto 54px; padding: 43px 62px 50px;
+    border: 1px solid #d8d2c8; border-radius: 3px; background: #fffefa;
+    box-shadow: 0 16px 44px rgba(68, 60, 45, .09);
+  }
+  .kicker { color: #97651d; font-size: 12px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+  h1 {
+    max-width: 670px; margin: 13px 0 13px; font-family: Georgia, "Times New Roman", serif;
+    color: #20211f; font-size: clamp(38px, 5vw, 58px); font-weight: 500; line-height: .99;
+    letter-spacing: -.035em;
+  }
+  .dek { max-width: 650px; margin: 0 0 22px; color: #66665e; font-family: Georgia, "Times New Roman", serif; font-size: 19px; line-height: 1.45; }
+  .byline { padding-top: 14px; border-top: 1px solid #dfdad1; color: #8a887f; font-size: 12px; }
+  article { margin-top: 25px; }
+  article p { margin: 0 0 17px; font-family: Georgia, "Times New Roman", serif; font-size: 18px; line-height: 1.68; }
+  #share-sentence, #sync-sentence { border-radius: 2px; }
+  @media (max-width: 650px) {
+    .topbar { height: 50px; padding: 0 18px; }
+    .topbar > span:last-child { display: none; }
+    main { width: calc(100% - 24px); margin: 14px auto 30px; padding: 27px 25px 38px; }
+    h1 { font-size: 38px; }
+    .dek { font-size: 17px; }
+    article { margin-top: 20px; }
+    article p { font-size: 16px; line-height: 1.58; }
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="mark">Field Notes</span>
+    <span>Issue 07 · The Open Web</span>
+  </header>
+  <main>
+    <div class="kicker">Marginalia</div>
+    <h1>The web is a shared margin.</h1>
+    <p class="dek">Reading becomes more useful when the thought beside a sentence can travel with it.</p>
+    <div class="byline">A short note on durable ideas · 4 min read</div>
+    <article>
+      <p>We remember the web in fragments: a sentence worth returning to, a question for a colleague, a connection that only becomes obvious later.</p>
+      <p><span id="share-sentence">A useful annotation should be easy to make, simple to keep, and possible to share without asking permission.</span></p>
+      <p><span id="sync-sentence">The best tools leave the page readable while keeping the conversation close at hand.</span></p>
+    </article>
+  </main>
+</body>
+</html>
