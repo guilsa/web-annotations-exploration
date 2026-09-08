@@ -684,8 +684,18 @@
     const doSave = async () => {
       const mark = current;
       if (!mark) return;
-      mark.note = ta.value;
-      mark.ts = Date.now();
+      const note = ta.value;
+      // `state.marks` may have been replaced wholesale by the storage.onChanged
+      // listener (which reloads a fresh, structurally-cloned array from storage
+      // ~300ms after our own create-time save). The object the editor holds
+      // (`mark`) can then be a stale reference no longer present in
+      // `state.marks`, so writing `mark.note` would be silently dropped by the
+      // next savePage(). Write the note onto the live entry found by id; if it
+      // was removed while we were editing, re-add the mark so the just-typed
+      // note is not lost.
+      const live = state.marks.find((m) => m.id === mark.id);
+      if (live) { live.note = note; live.ts = Date.now(); }
+      else { mark.note = note; mark.ts = Date.now(); state.marks.push(mark); }
       state.editor.close(); // close() nulls the shared `current` — keep a local ref
       await savePage();
       flash(mark.id);

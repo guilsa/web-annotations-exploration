@@ -149,20 +149,6 @@ await test('T2 pill click highlights AND opens the comment box', async () => {
   eq(await editorTa.evaluate((t) => t.value.length), 0, 'editor starts empty');
 });
 
-await test('T3 save note -> highlight + comment survive reload', async () => {
-  await editorTa.fill('the fox is the main character');
-  await page.locator('#tma-editor button', { hasText: 'Save' }).click();
-  await page.waitForFunction(() => {
-    const el = document.querySelector('#tma-editor');
-    const box = el && el.shadowRoot && el.shadowRoot.querySelector('.editor');
-    return !box || box.style.display !== 'block';
-  });
-  await page.reload({ waitUntil: 'load' });
-  await page.waitForSelector('[data-tma-id]', { timeout: 8000 });
-  const n = await page.locator('[data-tma-id]').count();
-  assert(n > 0, 'no highlights after reload');
-});
-
 const cardShown = () => page.waitForFunction(
   () => {
     const el = document.querySelector('#tma-card');
@@ -171,6 +157,35 @@ const cardShown = () => page.waitForFunction(
   },
   { timeout: 5000 },
 );
+
+await test('T3 save note -> highlight + comment survive reload', async () => {
+  // Type the note slowly, like a human (not fill()), then pause past the
+  // 300ms storage.onChanged debounce that createMarkFromSelection' own
+  // pre-editor savePage() triggers. That debounce reassigns state.marks to
+  // a structurally-cloned array; if the editor held the original mark ref,
+  // its Save used to be silently dropped (regression: "note does not appear,
+  // Edit reopens empty").
+  await editorTa.click();
+  await page.keyboard.type('the fox is the main character', { delay: 40 });
+  await page.waitForTimeout(500); // > 300ms debounce window
+  await page.locator('#tma-editor button', { hasText: 'Save' }).click();
+  await page.waitForFunction(() => {
+    const el = document.querySelector('#tma-editor');
+    const box = el && el.shadowRoot && el.shadowRoot.querySelector('.editor');
+    return !box || box.style.display !== 'block';
+  });
+  // The note must appear in the hover card immediately — no reload needed
+  // (this is the user's reported symptom).
+  await page.locator('[data-tma-id]').first().hover();
+  await cardShown();
+  const text = await cardText();
+  assert(text.includes('the fox is the main character'),
+    'card missing note right after Save (no reload): ' + text.slice(0, 120));
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForSelector('[data-tma-id]', { timeout: 8000 });
+  const n = await page.locator('[data-tma-id]').count();
+  assert(n > 0, 'no highlights after reload');
+});
 
 await test('T4 hover shows card with the note', async () => {
   await page.locator('[data-tma-id]').first().hover();
