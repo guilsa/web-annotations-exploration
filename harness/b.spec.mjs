@@ -53,6 +53,12 @@ const sw = await ctx.waitForEvent('serviceworker');
 const page = ctx.pages()[0] || (await ctx.newPage());
 page.on('pageerror', (e) => console.log('[pageerror page1]', (e.stack || e.message).split('\n')[0]));
 
+// Capture [TMB-PAIR] console logs per page so sync tests can assert the
+// WebRTC receive path actually ran (independent of the storage.onChanged
+// echo, which both tabs share in this single-profile harness).
+const pairLogs = { page: [], p2: [] };
+page.on('console', (m) => { const t = m.text(); if (t.includes('[TMB-PAIR]')) pairLogs.page.push(t); });
+
 const sendBg = (msg) => sw.evaluate(async (m) => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   await chrome.tabs.sendMessage(tab.id, m);
@@ -288,6 +294,7 @@ await test('B8 multiple marks in the SAME paragraph all render and survive', asy
 
 const p2 = await ctx.newPage();
 p2.on('pageerror', (e) => console.log('[pageerror page2]', (e.stack || e.message).split('\n')[0]));
+p2.on('console', (m) => { const t = m.text(); if (t.includes('[TMB-PAIR]')) pairLogs.p2.push(t); });
 await p2.goto(BASE + '/');
 await waitBooted(p2);
 
@@ -335,10 +342,21 @@ await test('B4 live sync: new mark on page1 appears on page2', async () => {
   await page.locator('#tmb-pill button.go').click();
   await page.waitForSelector('#p2 [data-tmb-id]'); // mark created on #p2
   await page.locator('#tmb-editor textarea').fill('synced over webrtc');
+  const before = pairLogs.p2.length;
   await page.locator('#tmb-editor button', { hasText: 'Save' }).click();
   await p2.waitForSelector('[data-tmb-id]', { timeout: 8000 });
   const n = await p2.locator('[data-tmb-id]').count();
   assert(n >= 1, 'page2 has the synced mark');
+  // The mark could reach page2 via WebRTC OR via the shared-profile
+  // storage.onChanged echo. Assert the WebRTC receive path actually ran:
+  // onMessage must not throw and must merge the incoming mark. Regression for
+  // the cross-browser bug where onMessage called this.ui.showForeign (which
+  // didn't exist — it's this.ui.panel.showForeign) and threw on every frame.
+  await page.waitForTimeout(400);
+  const merged = pairLogs.p2.slice(before).some((l) =>
+    /onMessage merge: added=[1-9]/.test(l) || /onMessage merge:.*added=0 updated=[1-9]/.test(l));
+  assert(merged, 'WebRTC receive path did not merge the mark on page2; logs: ' +
+    JSON.stringify(pairLogs.p2.slice(before)));
 });
 
 await test('B5 live sync: note edit on page1 reaches page2', async () => {

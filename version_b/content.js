@@ -477,20 +477,30 @@
 
     wireDc(dc) {
       this.dc = dc;
+      console.log('[TMB-PAIR] wireDc: role=' + this.role + ' dc.readyState=' + dc.readyState);
       dc.addEventListener('open', () => {
+        console.log('[TMB-PAIR] dc OPEN (role=' + this.role + ')');
         this.status('connected');
         this.sendState();
       });
       dc.addEventListener('message', (e) => {
+        let preview;
+        try { const m = JSON.parse(e.data); preview = m.t + ' marks=' + (Array.isArray(m.marks) ? m.marks.length : m.marks); }
+        catch (_) { preview = '(unparseable, len=' + (typeof e.data === 'string' ? e.data.length : '?') + ')'; }
+        console.log('[TMB-PAIR] dc MESSAGE (role=' + this.role + '): ' + preview);
         try {
           this.onMessage(JSON.parse(e.data));
-        } catch (_) { /* ignore bad frames */ }
+        } catch (err) { console.log('[TMB-PAIR] onMessage threw (role=' + this.role + '):', err && err.message || err, err && err.stack ? err.stack.split('\n').slice(0,3).join(' | ') : ''); /* ignore bad frames */ }
       });
       dc.addEventListener('close', () => {
+        console.log('[TMB-PAIR] dc CLOSE (role=' + this.role + ')');
         this.status('idle', 'The connection was closed.');
         this.core.lastRemoteIds = null;
       });
-      dc.addEventListener('error', () => this.status('error'));
+      dc.addEventListener('error', (err) => {
+        console.log('[TMB-PAIR] dc ERROR (role=' + this.role + '):', err && err.message || err);
+        this.status('error');
+      });
     }
 
     /** Invite side: create pc + data channel + offer. Returns invite code. */
@@ -499,17 +509,24 @@
       this.role = 'invite';
       this.pc = new RTCPeerConnection(Pair.iceConfig());
       this.wireDc(this.pc.createDataChannel('tmb', { ordered: true }));
+      this._wirePcLogs(this.pc);
       this.status('waiting-join');
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
       await Pair.waitIce(this.pc);
-      return sdpToCode(this.pc.localDescription.sdp);
+      const code = sdpToCode(this.pc.localDescription.sdp);
+      console.log('[TMB-PAIR] makeInvite: offer SDP len=' + this.pc.localDescription.sdp.length +
+        ' code len=' + code.length + ' iceGathering=' + this.pc.iceGatheringState +
+        ' conn=' + this.pc.connectionState);
+      return code;
     }
 
     /** Invite side: apply the peer's answer code. */
     async acceptJoin(code) {
       if (this.role !== 'invite' || !this.pc) throw new Error('Generate an invite first.');
-      await this.pc.setRemoteDescription({ type: 'answer', sdp: codeToSdp(code) });
+      const sdp = codeToSdp(code);
+      console.log('[TMB-PAIR] acceptJoin: answer SDP len=' + sdp.length + ' conn=' + this.pc.connectionState);
+      await this.pc.setRemoteDescription({ type: 'answer', sdp });
     }
 
     /** Join side: consume invite code, produce join code. */
@@ -517,24 +534,44 @@
       this.teardown();
       this.role = 'join';
       this.pc = new RTCPeerConnection(Pair.iceConfig());
-      this.pc.ondatachannel = (e) => this.wireDc(e.channel);
+      this.pc.ondatachannel = (e) => {
+        console.log('[TMB-PAIR] ondatachannel fired (join side): label=' + e.channel.label + ' readyState=' + e.channel.readyState);
+        this.wireDc(e.channel);
+      };
+      this._wirePcLogs(this.pc);
       this.status('waiting-invite');
-      await this.pc.setRemoteDescription({ type: 'offer', sdp: codeToSdp(inviteCode) });
+      const offerSdp = codeToSdp(inviteCode);
+      console.log('[TMB-PAIR] makeJoin: received offer SDP len=' + offerSdp.length);
+      await this.pc.setRemoteDescription({ type: 'offer', sdp: offerSdp });
       const answer = await this.pc.createAnswer();
       await this.pc.setLocalDescription(answer);
       await Pair.waitIce(this.pc);
-      return sdpToCode(this.pc.localDescription.sdp);
+      const code = sdpToCode(this.pc.localDescription.sdp);
+      console.log('[TMB-PAIR] makeJoin: answer SDP len=' + this.pc.localDescription.sdp.length +
+        ' code len=' + code.length + ' iceGathering=' + this.pc.iceGatheringState +
+        ' conn=' + this.pc.connectionState);
+      return code;
+    }
+
+    _wirePcLogs(pc) {
+      pc.addEventListener('connectionstatechange', () => {
+        console.log('[TMB-PAIR] pc connectionstatechange: ' + pc.connectionState + ' (role=' + this.role + ')');
+      });
+      pc.addEventListener('iceconnectionstatechange', () => {
+        console.log('[TMB-PAIR] iceconnectionstatechange: ' + pc.iceConnectionState + ' (role=' + this.role + ')');
+      });
+      pc.addEventListener('icegatheringstatechange', () => {
+        console.log('[TMB-PAIR] icegatheringstatechange: ' + pc.iceGatheringState + ' (role=' + this.role + ')');
+      });
     }
 
     sendState() {
       if (this.dc && this.dc.readyState === 'open') {
-        this.dc.send(JSON.stringify({
-          t: 'state',
-          url: this.core.pageKey(),
-          title: this.docTitle(),
-          ts: Date.now(),
-          marks: this.core.marks,
-        }));
+        const payload = { t: 'state', url: this.core.pageKey(), title: this.docTitle(), ts: Date.now(), marks: this.core.marks };
+        this.dc.send(JSON.stringify(payload));
+        console.log('[TMB-PAIR] sendState: sent marks=' + payload.marks.length + ' url=' + payload.url + ' (role=' + this.role + ')');
+      } else {
+        console.log('[TMB-PAIR] sendState: SKIP (dc readyState=' + (this.dc && this.dc.readyState) + ', role=' + this.role + ')');
       }
     }
 
@@ -543,7 +580,9 @@
     }
 
     onMessage(msg) {
-      if (!msg || typeof msg !== 'object') return;
+      if (!msg || typeof msg !== 'object') { console.log('[TMB-PAIR] onMessage: bad msg'); return; }
+      console.log('[TMB-PAIR] onMessage: t=' + msg.t + ' url=' + msg.url + ' myPageKey=' + this.core.pageKey() + ' marks=' + (Array.isArray(msg.marks) ? msg.marks.length : null) + ' (role=' + this.role + ')');
+      try {
       if (msg.t === 'bye') {
         this.status('idle', 'The other side ended the session.');
         this.core.lastRemoteIds = null;
@@ -552,16 +591,21 @@
       if (msg.t !== 'state' || !Array.isArray(msg.marks)) return;
       if (msg.url !== this.core.pageKey()) {
         this.status('connected', 'Peer is on a different page — see Import.');
-        if (this.ui) this.ui.showForeign(msg.url, msg.title, msg.marks);
+        if (this.ui && this.ui.panel) this.ui.panel.showForeign(msg.url, msg.title, msg.marks);
         return;
       }
-      if (this.ui) this.ui.showForeign(null);
+      if (this.ui && this.ui.panel) this.ui.panel.showForeign(null);
+      console.log('[TMB-PAIR] onMessage pre-merge: local=' + this.core.marks.length + ' remote=' + msg.marks.length + ' lastRemoteIds=' + (Array.isArray(this.core.lastRemoteIds) ? this.core.lastRemoteIds.length : this.core.lastRemoteIds));
       const res = mergeMarks(this.core.marks, msg.marks, this.core.lastRemoteIds);
       this.core.lastRemoteIds = msg.marks.map((m) => m.id);
+      console.log('[TMB-PAIR] onMessage merge: added=' + res.added + ' updated=' + res.updated + ' removed=' + res.removed.length);
       if (res.added || res.updated || res.removed.length) {
         this.core.marks = res.marks;
         this.core.save().then(() => this.core.render());
         this.sendState(); // propagate deletions/edits back (no-op for the peer)
+      }
+      } catch (err) {
+        console.log('[TMB-PAIR] onMessage INNER threw (role=' + this.role + '):', err && err.message || err, '\n', err && err.stack ? err.stack.split('\n').slice(0,4).join('\n') : '');
       }
     }
 
@@ -1288,6 +1332,7 @@
     for (const m of this.marks) {
       if (!this.wrapOne(m)) this.failed.push(m);
     }
+    console.log('[TMB-PAIR] render: total=' + this.marks.length + ' rendered=' + (this.marks.length - this.failed.length) + ' failed=' + this.failed.length);
     this.scheduleRetry();
   };
 
