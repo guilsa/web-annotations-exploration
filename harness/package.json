@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "demo:linkshare": "node linkshare-demo.mjs",
+    "demo:pairshare": "node pairshare-demo.mjs",
     "test:a": "node a.spec.mjs",
     "install-browser": "playwright install chromium"
   },

@@ -9,13 +9,19 @@
 Three approaches to sharing page comments, each designed as a standalone
 browser extension. Plain JavaScript, with no build step or dependencies.
 
-https://github.com/user-attachments/assets/2d68673b-de93-4845-aefa-49ecaff172fb
-
 ## Variants
 
 - 🔗 **Linkshare** · [`version_a`](version_a) — the link is the database: offline, portable, server-free.
 - 🤝 **Pairshare** · [`version_b`](version_b) — live browser-to-browser sync over WebRTC.
 - 📌 **Pinshare** · `version_c` — standalone comment sheets via local IPFS or an HTML file. *(Planned.)*
+
+**Linkshare**
+
+https://github.com/user-attachments/assets/2d68673b-de93-4845-aefa-49ecaff172fb
+
+**Pairshare**
+
+https://github.com/user-attachments/assets/757cb016-a47f-4305-883d-d69bf3ff3b99
 
 ## Try it
 
