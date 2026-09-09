@@ -17,17 +17,31 @@ delete syncs in real time and is saved locally on both sides.
 
 ## Core behavior
 
-1. Select text → floating pill appears with **four marker colors**
-   (yellow, blue, green, pink). Pick a color, click **💬 Comment** — the last
-   used color is remembered per browser.
-2. Write a note (or leave it empty for a plain highlight) → Save.
-3. Marks persist per-URL in `browser.storage.local` (key `tmb.pages`) and
+1. Select text → floating pill appears with two actions: **💬 Comment**
+   (default) and **✏️ Suggest edit**. Highlights are always **yellow** —
+   there is no color picker.
+2. **Comment** opens a lightweight **thread** in the right-side **comments
+   sidebar** anchored to that exact selection. Type the first message and
+   **Reply**; further replies accumulate in the same thread, shown in
+   chronological order.
+3. **Suggest edit** opens a **suggestion** card in the sidebar showing the
+   original selected passage as context, with an input pre-filled for the
+   proposed replacement. **Submit suggestion** saves it; **Cancel** discards
+   a suggestion that has no content yet.
+4. Every thread/suggestion is a **card** listing the document location
+   (context quote), **author** (two hard-coded gender-neutral names:
+   **Riley** on the invite side, **Jordan** on the join side — stored on the
+   thread so both peers agree), **timestamp**, and body. A **⋮ (three-dot)
+   button** opens an **Edit / Delete** menu. Cards **expand / collapse** via
+   their header; a **✕** control closes the whole sidebar.
+5. Marks persist per-URL in `browser.storage.local` (key `tmb.pages`) and
    restore on revisit via fuzzy text matching (quote + context + saved
-   offset, whitespace-insensitive tiers).
-4. Hover a highlight → comment card; click → pinned card with **Edit /
-   Close**. Edit prefills the note.
-5. `Alt+M` — comment on the current selection.
-6. `Alt+P` (or the toolbar button) — open the Pair panel.
+   offset, whitespace-insensitive tiers). Legacy note-marks are upgraded to
+   single-message comment threads on load.
+6. Hover a highlight → preview card; click **Open thread** (or click the
+   highlight) to open it in the sidebar.
+7. `Alt+M` — comment on the current selection. `Alt+L` — open/close the
+   sidebar. `Alt+P` (or the toolbar button) — open the Pair panel.
 
 ## Pairing (two browsers, same page URL)
 
@@ -43,29 +57,37 @@ Browser 2 (join):
 Browser 1:
 4. Paste the join code into the **Invite** tab → *Connect*.
 
-Both sides show **● Connected**. Now comments flow both ways live.
+Both sides show **● Connected**. Now comments flow both ways live: new
+threads, replies, submitted / re-proposed suggestions and deletions all
+sync in real time, with each side's author name (Riley / Jordan) attached.
 *End session* closes the channel (marks remain saved locally).
 
 ## Testing
 
 ```sh
-node tests/run-tests.js b     # 12 unit tests (merge logic, codes, matcher, DOM)
-cd harness && node b.spec.mjs # 7 Playwright e2e tests — includes a REAL
+node tests/run-tests.js b     # 20 unit tests (threads, merge, codes, matcher, DOM)
+cd harness && node b.spec.mjs # 15 Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
 ```
 
-The e2e suite loads the real add-on into Chromium and performs a genuine
-invite/join handshake, then verifies live add / edit / delete sync and
-session teardown across the two tabs.
+The e2e suite loads the real add-on into Chromium and verifies the comment
+thread + suggestion flows, sidebar card behavior (expand/collapse, ⋮ menu,
+close control), and a genuine invite/join handshake with live thread / reply
+/ suggestion / delete sync and session teardown across the two tabs.
+
+> Note: the e2e harness runs **headful** (headless Chrome does not register
+> this MV3 service worker in the pinned build). It brings its window to the
+> front before interactions; if the host keeps stealing focus, the helpers
+> fall back to force actions automatically.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `manifest.json` | MV3, cross-browser (Firefox + Chromium), `tmb:` commands `Alt+M` / `Alt+P` |
+| `manifest.json` | MV3, cross-browser (Firefox + Chromium), `tmb:` commands `Alt+M` / `Alt+L` / `Alt+P` |
 | `browser-shim.js` | maps `chrome` → `browser` in Chromium (no-op in Firefox) |
 | `background.js` | service worker: relays toolbar + commands (`tmb:toggle-panel`, `tmb:command`) |
-| `content.js` | class-based core: `Core` (state/index/marks), `Pair` (WebRTC), `UI` (pill with color dots, editor, card, pair overlay) |
+| `content.js` | class-based core: `Core` (state/index/threads), `Pair` (WebRTC), `UI` (pill, comments sidebar with thread cards, hover card, pair overlay) + pure thread helpers |
 | `icons/` | blue palette |
 
 ## Known limits (by design)
