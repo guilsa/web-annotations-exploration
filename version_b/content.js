@@ -1009,7 +1009,13 @@
       const sel = doc.defaultView.getSelection();
       if (!sel || sel.isCollapsed || !sel.rangeCount) return this.hidePill();
       const range = sel.getRangeAt(0);
-      if (!doc.body || !doc.body.contains(range.commonAncestorContainer)) return this.hidePill();
+      const anc = range.commonAncestorContainer;
+      // Selections inside our own shadow UI (sidebar composers, panel
+      // inputs) are not page selections. (Checking the sidebar's focused
+      // element instead would wrongly suppress the pill when the user selects
+      // page text while a composer still holds focus.)
+      if (this.inOwnUI(anc)) return this.hidePill();
+      if (!doc.body || !doc.body.contains(anc)) return this.hidePill();
       if (range.toString().trim().length === 0) return this.hidePill();
       const rect = range.getBoundingClientRect();
       this.pillEl.style.display = 'flex';
@@ -1138,12 +1144,22 @@
 
     /* ---- comments sidebar ---- */
 
-    /** True while the user is typing in a sidebar composer (pill must stay put). */
-    composerFocused() {
-      const root = this.hosts['sidebar'];
-      if (!root || !root.shadowRoot) return false;
-      const a = root.shadowRoot.activeElement;
-      return !!a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT');
+    /** True when a node lives inside one of our shadow-UI hosts (walking
+     *  across shadow boundaries). Used to keep the pill away from selections
+     *  made inside our own composers/inputs. */
+    inOwnUI(node) {
+      if (!node) return false;
+      const hosts = Object.values(this.hosts);
+      let n = node.nodeType === 1 ? node : (node.parentElement || null);
+      let root = node.getRootNode ? node.getRootNode() : null;
+      while (n || (root && root.nodeType === Node.DOCUMENT_FRAGMENT_ROOT)) {
+        if (n && hosts.includes(n)) return true;
+        if (root && hosts.includes(root.host)) return true;
+        n = n ? n.parentElement : (root.host ? root.host.parentElement : null);
+        root = root && root.nodeType === Node.DOCUMENT_FRAGMENT_ROOT && root.host && root.host.getRootNode
+          ? root.host.getRootNode() : null;
+      }
+      return false;
     }
 
     _buildSidebar() {
@@ -1953,7 +1969,6 @@
     });
 
     doc.addEventListener('selectionchange', () => {
-      if (ui.composerFocused()) return;
       ui.updatePill();
     });
     doc.addEventListener('keydown', (e) => {
