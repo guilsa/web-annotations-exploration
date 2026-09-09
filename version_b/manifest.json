@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Textmarker B — Pairshare",
-  "version": "0.3.0",
-  "description": "Highlight text with 4 marker colors, attach comments, and sync them live with another browser over a direct WebRTC connection (copy-paste invite, no server).",
+  "version": "0.4.0",
+  "description": "Highlight text, open comment threads and edit suggestions in a sidebar, and sync them live with another browser over a direct WebRTC connection (copy-paste invite, no server).",
   "browser_specific_settings": {
     "gecko": {
       "id": "textmarker-b@revamped.local",
@@ -30,7 +30,11 @@
   "commands": {
     "comment-selection": {
       "suggested_key": { "default": "Alt+M", "mac": "Alt+M" },
-      "description": "Highlight the current selection and add a comment"
+      "description": "Comment on the current selection"
+    },
+    "toggle-comments-sidebar": {
+      "suggested_key": { "default": "Alt+L", "mac": "Alt+L" },
+      "description": "Open / close the comments & suggestions sidebar"
     },
     "toggle-pair-panel": {
       "suggested_key": { "default": "Alt+P", "mac": "Alt+P" },

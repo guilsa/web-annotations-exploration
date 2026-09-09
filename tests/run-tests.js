@@ -427,6 +427,94 @@ function testB() {
     eq(P.findOffsets(modified, mark), [30, 41]);
   });
 
+  /* ---------- threads (comments & edit suggestions) ---------- */
+
+  test('pure: localName maps pairing roles to the two hard-coded names', () => {
+    eq(P.localName(null), 'Riley');
+    eq(P.localName('invite'), 'Riley');
+    eq(P.localName('join'), 'Jordan');
+    eq(P.displayName('me'), 'Riley');
+    eq(P.displayName('peer'), 'Jordan');
+  });
+
+  const thread0 = () => ({ id: 't1', kind: 'comment', quote: 'q', offset: 10, name: 'Riley', author: 'me', ts: 100, messages: [] });
+
+  test('pure: appendMessage appends chronologically and is immutable', () => {
+    const t = thread0();
+    const t1 = P.appendMessage(t, 'first', 'Riley', 200);
+    const t2 = P.appendMessage(t1, 'second', 'Jordan', 300);
+    eq(t.messages.length, 0, 'original thread untouched');
+    eq(t1.messages.length, 1);
+    eq(t2.messages.map((m) => m.body), ['first', 'second']);
+    assert(t2.messages[0].id !== t2.messages[1].id, 'unique message ids');
+    eq(t2.messages[1].name, 'Jordan');
+    eq(t2.ts, 300, 'thread ts bumped on append');
+  });
+
+  test('pure: updateMessage / deleteMessage are immutable + id-scoped', () => {
+    let t = P.appendMessage(thread0(), 'first', 'Riley', 200);
+    t = P.appendMessage(t, 'second', 'Jordan', 300);
+    const secondId = t.messages[1].id;
+    const u = P.updateMessage(t, secondId, 'edited', 400);
+    eq(t.messages[1].body, 'second', 'original untouched');
+    eq(u.messages[1].body, 'edited');
+    assert(P.updateMessage(t, 'no-such-id', 'x') === t, 'unknown id -> same reference');
+    const d = P.deleteMessage(u, secondId);
+    eq(d.messages.map((m) => m.body), ['first']);
+    assert(P.deleteMessage(d, 'no-such-id') === d, 'unknown id -> same reference');
+  });
+
+  test('pure: normalizeMark upgrades a legacy note into a single message', () => {
+    const legacy = { id: 'x', quote: 'q', note: 'hello', author: 'peer', ts: 42 };
+    const n = P.normalizeMark(legacy);
+    eq(n.kind, 'comment');
+    eq(n.messages.length, 1);
+    eq(n.messages[0].body, 'hello');
+    eq(n.messages[0].name, 'Jordan', 'legacy author role mapped to a name');
+    eq(n.name, 'Jordan');
+    assert(legacy.messages === undefined, 'input untouched');
+    eq(P.normalizeMark(n), n, 'idempotent');
+    // blank note -> plain highlight, no messages
+    eq(P.normalizeMark({ id: 'y', quote: 'q', note: '   ', author: 'me', ts: 1 }).messages, []);
+    // suggestions keep their proposed text, never adopt the note
+    const sug = P.normalizeMark({ id: 'z', kind: 'suggestion', quote: 'q', proposed: 'p', note: 'stale', author: 'me', ts: 1, messages: [] });
+    eq(sug.kind, 'suggestion');
+    eq(sug.proposed, 'p');
+    eq(sug.messages, []);
+  });
+
+  test('pure: sortedThreads orders by document offset (stable)', () => {
+    const a = { id: 'a', offset: 30 };
+    const b = { id: 'b', offset: 5 };
+    const c = { id: 'c', offset: 30 };
+    const d = { id: 'd' }; // missing offset sorts first
+    eq(P.sortedThreads([a, b, c, d]).map((m) => m.id), ['d', 'b', 'a', 'c']);
+  });
+
+  test('pure: mergeMarks syncs thread replies (whole-thread LWW)', () => {
+    // peer appended a reply -> newer remote thread wins
+    const base = P.appendMessage(thread0(), 'mine', 'Riley', 100);
+    const remote = P.appendMessage(base, 'theirs', 'Jordan', 200);
+    const r = P.mergeMarks([base], [remote], null);
+    eq(r.updated, 1);
+    eq(r.marks[0].messages.map((m) => m.name), ['Riley', 'Jordan']);
+    // newer local thread wins over the older remote one
+    const localNew = P.appendMessage(remote, 'mine-newer', 'Riley', 300);
+    const r2 = P.mergeMarks([localNew], [remote], null);
+    eq(r2.updated, 0);
+    eq(r2.marks[0].messages.length, 3);
+  });
+
+  test('pure: mergeMarks syncs suggested-edit updates', () => {
+    const mkSug = (proposed, ts) => ({ id: 's', kind: 'suggestion', quote: 'q', proposed, name: 'Riley', ts, offset: 0, messages: [] });
+    const r = P.mergeMarks([mkSug('old', 100)], [mkSug('new', 200)], null);
+    eq(r.updated, 1);
+    eq(r.marks[0].proposed, 'new');
+    const r2 = P.mergeMarks([mkSug('new', 200)], [mkSug('old', 100)], null);
+    eq(r2.updated, 0);
+    eq(r2.marks[0].proposed, 'new', 'newer local suggestion kept');
+  });
+
   /* ---------- DOM (fake) ---------- */
 
   function makePage() {

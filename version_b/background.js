@@ -25,6 +25,8 @@ browser.action.onClicked.addListener(() => {
 browser.commands.onCommand.addListener((command) => {
   if (command === 'comment-selection') {
     sendToActiveTab({ type: 'tmb:command', cmd: 'comment' });
+  } else if (command === 'toggle-comments-sidebar') {
+    sendToActiveTab({ type: 'tmb:command', cmd: 'toggle-sidebar' });
   } else if (command === 'toggle-pair-panel') {
     sendToActiveTab({ type: 'tmb:toggle-panel' });
   }

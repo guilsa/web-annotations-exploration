@@ -129,10 +129,100 @@
   const sdpToCode = (sdp) => b64enc(sdp);
   const codeToSdp = (code) => b64dec(String(code || '').replace(/\s+/g, ''));
 
+  /* ---- threads (comments & edit suggestions) ----
+   *
+   * A mark is a thread anchored to a text selection. kind 'comment' holds a
+   * chronological list of messages; kind 'suggestion' holds the proposed
+   * replacement for the selected passage (plus discussion messages).
+   * All mutations are pure/immutable so the same code paths can be unit
+   * tested and the resulting threads round-trip through mergeMarks (whole-
+   * thread last-write-wins by ts).
+   */
+
+  const AUTHORS = { me: 'Riley', peer: 'Jordan' };
+  const LOCAL_ROLE = 'me';
+
+  function displayName(role) {
+    return AUTHORS[role] || AUTHORS.me;
+  }
+
+  /**
+   * Local author identity. The two hard-coded names are assigned by pairing
+   * role: the side that generated the invite code is Riley, the side that
+   * joined with a join code is Jordan. Unpaired (or freshly paired) browsers
+   * are Riley. The chosen name is stored on each thread/message it creates,
+   * so both peers display the same author identity.
+   */
+  function localName(pairRole) {
+    return pairRole === 'join' ? AUTHORS.peer : AUTHORS.me;
+  }
+
+  const mid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+  function appendMessage(thread, body, name, ts) {
+    const messages = Array.isArray(thread.messages) ? thread.messages.slice() : [];
+    messages.push({ id: mid('m'), name: name || AUTHORS.me, body: body == null ? '' : String(body), ts: ts || Date.now() });
+    return Object.assign({}, thread, { messages, ts: ts || Date.now() });
+  }
+
+  function updateMessage(thread, id, body, ts) {
+    if (!Array.isArray(thread.messages)) return thread;
+    let hit = false;
+    const messages = thread.messages.map((m) => {
+      if (m.id !== id) return m;
+      hit = true;
+      return Object.assign({}, m, { body: body == null ? '' : String(body), ts: ts || m.ts });
+    });
+    return hit ? Object.assign({}, thread, { messages, ts: ts || Date.now() }) : thread;
+  }
+
+  function deleteMessage(thread, id) {
+    if (!Array.isArray(thread.messages)) return thread;
+    const messages = thread.messages.filter((m) => m.id !== id);
+    if (messages.length === thread.messages.length) return thread;
+    return Object.assign({}, thread, { messages, ts: Date.now() });
+  }
+
+  /**
+   * Upgrade a stored mark to the thread shape. Legacy marks (pre-threads)
+   * become comment threads whose single message is the old `note`; the note
+   * is kept verbatim so the upgrade is idempotent and round-trips through
+   * storage without changing what is displayed.
+   */
+  function normalizeMark(m) {
+    if (!m || typeof m !== 'object') return m;
+    const kind = m.kind === 'suggestion' ? 'suggestion' : 'comment';
+    const out = Object.assign({}, m, { kind });
+    if (kind === 'suggestion') {
+      out.proposed = typeof m.proposed === 'string' ? m.proposed : '';
+      out.messages = Array.isArray(m.messages) ? m.messages : [];
+    } else {
+      out.messages = Array.isArray(m.messages)
+        ? m.messages
+        : (typeof m.note === 'string' && m.note.trim() ? [{ id: mid('m'), name: displayName(m.author), body: m.note, ts: m.ts || Date.now() }] : []);
+    }
+    if (typeof out.name !== 'string' || !out.name) out.name = displayName(m.author);
+    return out;
+  }
+
+  const normalizeMarks = (marks) => (Array.isArray(marks) ? marks.map(normalizeMark) : []);
+
+  /** Document order: ascending saved offset; stable for equal offsets. */
+  function sortedThreads(marks) {
+    return marks
+      .map((m, i) => [m, i])
+      .sort((a, b) => ((a[0].offset || 0) - (b[0].offset || 0)) || (a[1] - b[1]))
+      .map((x) => x[0]);
+  }
+
+  const threadsEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
   /**
    * Merge a remote mark set into the local one.
    * - ids present remotely but not locally  -> added
-   * - same id, newer remote ts, different note -> note updated
+   * - same id, newer remote ts, different content -> whole mark replaced
+   *   (threads are compared as a unit: any new/edited reply or proposed
+   *   edit on the newer side wins; last-write-wins)
    * - ids present in the PREVIOUS remote state but gone now -> removed
    *   (only when lastRemoteIds is known; the first exchange never deletes)
    */
@@ -148,9 +238,9 @@
       if (!l) {
         out.push(r);
         added++;
-      } else if (r.ts > l.ts && r.note !== l.note) {
-        l.note = r.note;
-        l.ts = r.ts;
+      } else if (r.ts > l.ts && !threadsEqual(r, l)) {
+        const i = out.indexOf(l);
+        out[i] = r;
         updated++;
       }
     }
@@ -176,6 +266,15 @@
       sdpToCode,
       codeToSdp,
       mergeMarks,
+      AUTHORS,
+      displayName,
+      localName,
+      appendMessage,
+      updateMessage,
+      deleteMessage,
+      normalizeMark,
+      normalizeMarks,
+      sortedThreads,
     };
   }
 
@@ -207,6 +306,10 @@
         month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
       });
     } catch (_) { return ''; }
+  };
+  const trunc = (s, n) => {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n - 1) + '…' : s;
   };
 
   /* ---------------- Core: state, storage, index, marks ---------------- */
@@ -241,7 +344,8 @@
         browser.storage.local.get(COLOR_KEY),
       ]);
       const page = (pages[PAGES_KEY] || {})[this.pageKey()];
-      this.marks = page && Array.isArray(page.marks) ? page.marks : [];
+      // Upgrade legacy marks (note strings) to thread shape once, at load.
+      this.marks = normalizeMarks(page && Array.isArray(page.marks) ? page.marks : []);
       this.color = colorData[COLOR_KEY] && COLORS[colorData[COLOR_KEY]] ? colorData[COLOR_KEY] : DEFAULT_COLOR;
     }
 
@@ -647,38 +751,28 @@
       background: #102a43; border-radius: 999px; padding: 4px 8px;
       box-shadow: 0 4px 14px rgba(0,0,0,.4);
     }
-    .dot {
-      width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent;
-      cursor: pointer; padding: 0;
-    }
-    .dot.sel { border-color: #102a43; box-shadow: 0 0 0 2px #fff; }
     .pill button.go {
       border: 0; background: #3b82f6; color: #fff; font-weight: 600;
       border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: 13px;
     }
-    .card, .editor {
+    .pill button.go.alt { background: #0e7490; }
+    .card {
       position: fixed; z-index: 2147483647; display: none;
       background: #fff; color: #111827; border-radius: 10px;
       box-shadow: 0 8px 30px rgba(0,0,0,.3); font-size: 13px;
+      max-width: 320px; padding: 10px 12px;
     }
-    .card { max-width: 320px; padding: 10px 12px; }
     .card .q { color: #6b7280; font-size: 12px; margin: 0 0 6px;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     .card .note { margin: 0 0 6px; white-space: pre-wrap; }
     .card .meta { color: #6b7280; font-size: 11px; }
-    .card .row, .editor .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-    .card button, .editor button, .panel button, .overlay button {
+    .card .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .card button, .panel button, .overlay button {
       border: 1px solid #d1d5db; background: #f9fafb; color: #111827;
       border-radius: 6px; padding: 5px 11px; cursor: pointer; font-size: 12px;
     }
-    .card button.primary, .editor button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; font-weight: 600; }
+    .card button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; font-weight: 600; }
     .card button.danger:hover { background: #fee2e2; border-color: #fca5a5; }
-    .editor { width: 340px; padding: 10px 12px; }
-    .editor h4 { margin: 0 0 6px; font-size: 12px; color: #6b7280; font-weight: 600; }
-    .editor textarea {
-      width: 100%; min-height: 72px; resize: vertical; padding: 8px;
-      border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; font-family: inherit;
-    }
     .toast {
       position: fixed; z-index: 2147483647; left: 50%; bottom: 24px; transform: translateX(-50%);
       display: none; background: #111827; color: #f9fafb; padding: 8px 16px;
@@ -719,6 +813,82 @@
     }
     .foot { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
     .help { color: #6b7280; font-size: 11px; margin: 12px 0 0; }
+
+    /* ---- comments sidebar ---- */
+    .sidebar {
+      position: fixed; top: 0; right: 0; height: 100vh; width: min(400px, 92vw);
+      display: none; flex-direction: column;
+      background: #f8fafc; color: #111827;
+      border-left: 1px solid #e2e8f0; box-shadow: -8px 0 24px rgba(0,0,0,.18);
+      font-size: 13px; z-index: 2147483647;
+    }
+    .sb-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+      border-bottom: 1px solid #e2e8f0; background: #fff; }
+    .sb-head h3 { margin: 0; font-size: 14px; flex: 1; }
+    .sb-count { color: #6b7280; font-size: 12px; }
+    .sb-close { border: 0; background: transparent; font-size: 15px; cursor: pointer;
+      padding: 4px 8px; border-radius: 6px; color: #475569; }
+    .sb-close:hover { background: #e2e8f0; }
+    .sb-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+    .sb-empty { color: #6b7280; font-size: 12px; padding: 24px 16px; text-align: center; margin: auto; }
+    .sb-card { position: relative; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .sb-card.menu-open { z-index: 5; }
+    .sb-card.active { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.25); }
+    .sb-card-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+      cursor: pointer; user-select: none; }
+    .badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+      border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+    .badge.comment { background: #dbeafe; color: #1e40af; }
+    .badge.suggestion { background: #fef3c7; color: #92400e; }
+    .badge.draft { background: #e0e7ff; color: #3730a3; }
+    .sb-card-head .ctx { flex: 1; color: #374151; font-size: 12px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .sb-card-head .when { color: #6b7280; font-size: 11px; white-space: nowrap; }
+    .sb-more { border: 0; background: transparent; cursor: pointer; color: #475569;
+      font-size: 15px; line-height: 1; padding: 3px 6px; border-radius: 50%;
+      width: 24px; height: 24px; flex: none; }
+    .sb-more:hover { background: #e2e8f0; }
+    .sb-more.open { background: #e2e8f0; }
+    .sb-card-body { display: none; border-top: 1px solid #f1f5f9; padding: 10px 12px; }
+    .sb-card.open .sb-card-body { display: block; }
+    .sb-card .quote { margin: 0 0 8px; padding: 6px 8px; background: #fffbeb;
+      border-left: 3px solid #fde68a; border-radius: 4px; color: #78350f;
+      font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .sb-card.suggestion .quote { background: #fff7ed; border-left-color: #fdba74; }
+    .prop-label { font-size: 11px; font-weight: 700; color: #6b7280; margin: 8px 0 4px;
+      text-transform: uppercase; letter-spacing: .4px; }
+    .prop { margin: 0 0 8px; padding: 6px 8px; background: #f0fdf4; border-left: 3px solid #86efac;
+      border-radius: 4px; color: #14532d; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .prop-input { width: 100%; min-height: 64px; resize: vertical; padding: 6px 8px;
+      border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; font-family: inherit; }
+    .sb-msgs { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 8px; }
+    .sb-msg { padding: 6px 8px; background: #f8fafc; border: 1px solid #eef2f7; border-radius: 8px; }
+    .sb-msg .who { font-size: 11px; color: #6b7280; margin-bottom: 2px; display: flex; gap: 6px; justify-content: space-between; }
+    .sb-msg .who b { color: #334155; font-weight: 600; }
+    .sb-msg .body { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+    .sb-none { color: #94a3b8; font-size: 12px; font-style: italic; margin: 4px 0 8px; }
+    .sb-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .sb-row button, .sb-card .menu button, .sb-card .composer button {
+      border: 1px solid #d1d5db; background: #f9fafb; color: #111827;
+      border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px;
+    }
+    .sb-row button.primary, .sb-card .menu button.primary, .sb-card .composer button.primary {
+      background: #3b82f6; border-color: #3b82f6; color: #fff; font-weight: 600; }
+    .sb-row button.danger:hover, .sb-card .menu button.danger:hover { background: #fee2e2; border-color: #fca5a5; }
+    .composer { margin-top: 8px; }
+    .composer textarea {
+      width: 100%; min-height: 56px; resize: vertical; padding: 6px 8px;
+      border: 1px solid #d1d5db; border-radius: 6px; font-size: 12.5px; font-family: inherit;
+    }
+    .sb-menu { position: absolute;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; min-width: 110px; z-index: 10; }
+    .sb-menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent;
+      padding: 6px 10px; border-radius: 6px; font-size: 12.5px; cursor: pointer; color: #111827; }
+    .sb-menu button:hover { background: #f1f5f9; }
+    .sb-menu button.danger { color: #b91c1c; }
+    .sb-menu button.danger:hover { background: #fee2e2; }
   `;
 
   class UI {
@@ -728,13 +898,17 @@
       core.ui = this;
       this.hosts = {};
       this.toastTimer = null;
-      this.pillColor = core.color;
       this._buildPill();
-      this._buildEditor();
       this._buildCard();
+      this._buildSidebar();
       this._buildPanel();
       this._buildToast();
       pair.setUI(this);
+    }
+
+    /** Local author identity (see localName() in the pure helpers). */
+    localName() {
+      return localName(this.pair ? this.pair.role : null);
     }
 
     doc() { return this.core.doc; }
@@ -801,28 +975,24 @@
     _buildPill() {
       const root = this.host('pill');
       const pill = this.h(root, 'div', 'pill');
-      for (const name of COLOR_NAMES) {
-        const dot = this.h(root, 'button', 'dot' + (name === this.pillColor ? ' sel' : ''));
-        dot.style.background = COLORS[name].bg;
-        dot.title = 'Marker color: ' + name;
-        dot.dataset.color = name;
-        dot.addEventListener('mousedown', (e) => e.preventDefault());
-        dot.addEventListener('click', () => {
-          this.pillColor = name;
-          this.core.saveColor(name);
-          for (const d of root.querySelectorAll('.dot')) {
-            d.classList.toggle('sel', d.dataset.color === name);
-          }
-        });
-        pill.appendChild(dot);
-      }
-      const go = this.h(root, 'button', 'go', '💬 Comment');
-      go.addEventListener('mousedown', (e) => e.preventDefault());
-      go.addEventListener('click', () => {
+      // Two explicit actions: Comment (default primary) and Suggest edit.
+      // Highlights are always yellow — no color picker.
+      const comment = this.h(root, 'button', 'go', '💬 Comment');
+      comment.setAttribute('data-el', 'comment');
+      const suggest = this.h(root, 'button', 'go alt', '✏️ Suggest edit');
+      suggest.setAttribute('data-el', 'suggest');
+      comment.addEventListener('mousedown', (e) => e.preventDefault());
+      suggest.addEventListener('mousedown', (e) => e.preventDefault());
+      comment.addEventListener('click', () => {
         this.hidePill();
-        this.core.createMarkFromSelection(this.pillColor);
+        this.core.createMarkFromSelection('comment');
       });
-      pill.appendChild(go);
+      suggest.addEventListener('click', () => {
+        this.hidePill();
+        this.core.createMarkFromSelection('suggestion');
+      });
+      pill.appendChild(comment);
+      pill.appendChild(suggest);
       root.appendChild(pill);
       this.doc().addEventListener('mousedown', (e) => {
         if (e.button === 0 && !this.insideHost('pill', e)) this.hidePill();
@@ -847,93 +1017,6 @@
       this.pillEl.style.top = Math.min(rect.bottom + 6, doc.defaultView.innerHeight - 44) + 'px';
     }
 
-    /* ---- editor ---- */
-
-    _buildEditor() {
-      const root = this.host('editor');
-      const box = this.h(root, 'div', 'editor');
-      const title = this.h(root, 'h4', null, 'Comment on highlighted text');
-      const ta = this.h(root, 'textarea');
-      ta.placeholder = 'Write a comment… (leave empty for a plain highlight)';
-      ta.maxLength = 5000;
-      const row = this.h(root, 'div', 'row');
-      const save = this.h(root, 'button', 'primary', 'Save');
-      const del = this.h(root, 'button', 'danger', 'Delete');
-      const cancel = this.h(root, 'button', null, 'Cancel');
-      row.appendChild(save);
-      row.appendChild(del);
-      row.appendChild(cancel);
-      box.appendChild(title);
-      box.appendChild(ta);
-      box.appendChild(row);
-      root.appendChild(box);
-
-      let current = null;
-      const self = this;
-      const api = {
-        open(mark, anchorEl) {
-          current = mark;
-          ta.value = mark.note || '';
-          del.style.display = mark.author === 'me' ? '' : 'none';
-          box.style.display = 'block';
-          self.positionEditor(anchorEl);
-          ta.focus();
-          ta.select();
-        },
-        close() {
-          current = null;
-          box.style.display = 'none';
-        },
-        current: () => current,
-      };
-      this.editor = api;
-
-      save.addEventListener('click', () => {
-        const mark = current;
-        if (!mark) return;
-        mark.note = ta.value;
-        mark.ts = Date.now();
-        api.close();
-        this.core.updateMark(mark);
-      });
-      del.addEventListener('click', () => {
-        const mark = current;
-        if (!mark) return;
-        api.close();
-        this.core.deleteMark(mark.id);
-      });
-      cancel.addEventListener('click', () => api.close());
-      ta.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save.click();
-        if (e.key === 'Escape') api.close();
-      });
-      this.doc().addEventListener('mousedown', (e) => {
-        if (box.style.display === 'block' && !this.insideHost('editor', e) && !this.isHighlight(e.target)) {
-          api.close();
-        }
-      });
-      this.doc().defaultView.addEventListener('scroll', () => api.close(), true);
-    }
-
-    positionEditor(anchorEl) {
-      const box = this.host('editor').querySelector('.editor');
-      const win = this.doc().defaultView;
-      let rect = null;
-      if (anchorEl && anchorEl.getBoundingClientRect) rect = anchorEl.getBoundingClientRect();
-      if (!rect || (rect.width === 0 && rect.height === 0)) {
-        box.style.left = '16px';
-        box.style.top = '16px';
-        return;
-      }
-      const w = 340;
-      const hgt = box.offsetHeight || 180;
-      let top = rect.bottom + 8;
-      if (top + hgt > win.innerHeight - 8) top = rect.top - hgt - 8;
-      top = Math.max(8, Math.min(top, win.innerHeight - hgt - 8));
-      box.style.left = Math.max(8, Math.min(rect.left, win.innerWidth - w - 8)) + 'px';
-      box.style.top = top + 'px';
-    }
-
     isHighlight(target) {
       let el = target;
       while (el && el.nodeType === Node.ELEMENT_NODE) {
@@ -952,9 +1035,10 @@
       const note = this.h(root, 'p', 'note');
       const meta = this.h(root, 'div', 'meta');
       const row = this.h(root, 'div', 'row');
-      const edit = this.h(root, 'button', 'primary', 'Edit');
+      const openBtn = this.h(root, 'button', 'primary', 'Open thread');
+      openBtn.setAttribute('data-el', 'open');
       const close = this.h(root, 'button', null, 'Close');
-      row.appendChild(edit);
+      row.appendChild(openBtn);
       row.appendChild(close);
       box.appendChild(q);
       box.appendChild(note);
@@ -963,39 +1047,43 @@
       root.appendChild(box);
 
       let hoverTimer = null;
-      let pinned = false;
       let currentMark = null;
 
       const show = (mark, anchorEl) => {
         currentMark = mark;
         q.textContent = '“' + mark.quote.slice(0, 120) + (mark.quote.length > 120 ? '…' : '') + '”';
-        note.textContent = mark.note ? mark.note : '(no comment)';
-        note.style.display = mark.note ? '' : 'none';
-        meta.textContent = mark.author + ' · ' + fmtTime(mark.ts) + ' · ' + (mark.color || DEFAULT_COLOR) + ' marker';
+        if (mark.kind === 'suggestion') {
+          note.textContent = 'Proposed: “' + String(mark.proposed || '').slice(0, 160) + (String(mark.proposed || '').length > 160 ? '…' : '') + '”';
+          note.style.display = '';
+        } else {
+          const msgs = Array.isArray(mark.messages) ? mark.messages : [];
+          const last = msgs[msgs.length - 1];
+          if (last && last.body) {
+            note.textContent = last.body;
+            note.style.display = '';
+          } else {
+            note.textContent = '(no comment yet)';
+            note.style.display = '';
+          }
+        }
+        const n = Array.isArray(mark.messages) ? mark.messages.length : 0;
+        meta.textContent = (mark.name || displayName(mark.author)) + ' · ' + fmtTime(mark.ts) +
+          (mark.kind === 'suggestion' ? ' · suggestion' : n > 1 ? ' · ' + n + ' comments' : n === 1 ? ' · 1 comment' : '');
         box.style.display = 'block';
         this.positionCard(anchorEl);
       };
       const hide = () => {
-        if (pinned) return;
         box.style.display = 'none';
         currentMark = null;
       };
-      // Unpin + hide in one step. `hide()` alone is a no-op while the card is
-      // pinned (clicking a highlight pins it), so action buttons that should
-      // dismiss the card must unpin first — otherwise the card stays on top
-      // of whatever they open next (the editor opens behind it because the
-      // card's shadow host is appended after the editor's in the light DOM
-      // and they share the same z-index). Same bug + fix as version_a.
-      const dismiss = () => { pinned = false; hide(); };
 
-      edit.addEventListener('click', () => {
-        const mark = currentMark; // capture: dismiss() clears currentMark
+      openBtn.addEventListener('click', () => {
+        const mark = currentMark; // capture: hide() clears currentMark
         if (!mark) return;
-        dismiss();
-        const el = this.doc().querySelector('[' + ID_ATTR + '="' + mark.id + '"]');
-        this.editor.open(mark, el);
+        hide();
+        this.openThread(mark.id);
       });
-      close.addEventListener('click', dismiss);
+      close.addEventListener('click', hide);
 
       this.doc().addEventListener('mouseover', (e) => {
         const el = e.target;
@@ -1021,15 +1109,15 @@
         if (!hl) return;
         e.preventDefault();
         e.stopPropagation();
-        pinned = true;
-        const mark = this.core.marks.find((m) => m.id === hl.getAttribute(ID_ATTR));
-        if (mark) show(mark, hl);
+        const id = hl.getAttribute(ID_ATTR);
+        // Clicking a highlight opens its thread in the sidebar (the hover
+        // card stays available for a quick peek without switching focus).
+        this._sbHideMenu();
+        this.openThread(id);
       }, true);
       this.doc().addEventListener('mousedown', (e) => {
         if (box.style.display === 'block' && !this.insideHost('card', e) && !this.isHighlight(e.target)) {
-          pinned = false;
-          box.style.display = 'none';
-          currentMark = null;
+          hide();
         }
       });
     }
@@ -1046,6 +1134,411 @@
       top = Math.max(8, Math.min(top, win.innerHeight - hgt - 8));
       box.style.left = Math.max(8, Math.min(rect.left, win.innerWidth - w - 8)) + 'px';
       box.style.top = top + 'px';
+    }
+
+    /* ---- comments sidebar ---- */
+
+    /** True while the user is typing in a sidebar composer (pill must stay put). */
+    composerFocused() {
+      const root = this.hosts['sidebar'];
+      if (!root || !root.shadowRoot) return false;
+      const a = root.shadowRoot.activeElement;
+      return !!a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT');
+    }
+
+    _buildSidebar() {
+      const root = this.host('sidebar');
+      const aside = this.h(root, 'aside', 'sidebar');
+      aside.setAttribute('data-el', 'aside');
+      const head = this.h(root, 'div', 'sb-head');
+      const title = this.h(root, 'h3', null, 'Comments & suggestions');
+      const count = this.h(root, 'span', 'sb-count');
+      count.setAttribute('data-el', 'count');
+      const close = this.h(root, 'button', 'sb-close', '✕');
+      close.setAttribute('data-el', 'close');
+      close.title = 'Close sidebar';
+      head.appendChild(title);
+      head.appendChild(count);
+      head.appendChild(close);
+      const list = this.h(root, 'div', 'sb-list');
+      list.setAttribute('data-el', 'list');
+      const empty = this.h(root, 'div', 'sb-empty');
+      empty.setAttribute('data-el', 'empty');
+      empty.textContent = 'Nothing here yet. Select some text, then choose Comment or Suggest edit.';
+      aside.appendChild(head);
+      aside.appendChild(list);
+      aside.appendChild(empty);
+      root.appendChild(aside);
+
+      // Shared action menu (Edit / Delete) shown next to a card's ⋮ button.
+      const menu = this.h(root, 'div', 'sb-menu');
+      menu.setAttribute('data-el', 'menu');
+      menu.style.display = 'none';
+      const mEdit = this.h(root, 'button', null, 'Edit');
+      mEdit.setAttribute('data-el', 'menu-edit');
+      const mDel = this.h(root, 'button', 'danger', 'Delete');
+      mDel.setAttribute('data-el', 'menu-delete');
+      menu.appendChild(mEdit);
+      menu.appendChild(mDel);
+      root.appendChild(menu);
+
+      // State that must survive re-renders while the user is composing.
+      this.sbOpenIds = new Set();        // expanded cards
+      this.sbComposing = null;           // { id, mode } — active composer session
+      this.sbFocusKey = null;            // { id, mode } — last-focused composer
+      this.sbComposerDrafts = {};        // id -> { mode, value }
+      this.sbMenuFor = null;             // id of the card whose menu is open
+      this.sbMenuMark = null;            // the mark of the card whose menu is open
+      this.sbActiveId = null;            // most-recently-opened card (highlight)
+      this._sbAside = aside;
+      this._sbList = list;
+      this._sbEmpty = empty;
+      this._sbCount = count;
+      this._sbMenu = menu;
+      this._sbMenuEdit = mEdit;
+      this._sbMenuDelete = mDel;
+
+      close.addEventListener('click', () => this.closeSidebar());
+      mEdit.addEventListener('click', () => this._sbMenuAction('edit'));
+      mDel.addEventListener('click', () => this._sbMenuAction('delete'));
+      list.addEventListener('focusin', (e) => {
+        const t = e.target;
+        if (t && t.getAttribute && t.getAttribute('data-el') === 'composer') {
+          this.sbFocusKey = { id: t.getAttribute('data-id'), mode: t.getAttribute('data-mode') };
+        }
+      });
+      list.addEventListener('scroll', () => this._sbHideMenu(), { passive: true });
+      this.doc().addEventListener('mousedown', (e) => {
+        if (this.sbMenuFor && !this.insideHost('sidebar', e) &&
+            !(e.target && e.target.closest && e.target.closest('[' + ID_ATTR + ']'))) {
+          this._sbHideMenu();
+        }
+      });
+    }
+
+    /** Escape: close the action menu, then the sidebar if open. In-progress
+     *  composer drafts are kept, so re-opening restores what was typed. */
+    dismissSidebar() {
+      this._sbHideMenu();
+      if (this.sidebarOpen()) this.closeSidebar();
+    }
+
+    sidebarOpen() {
+      return !!this._sbAside && this._sbAside.style.display === 'flex';
+    }
+    openSidebar() {
+      if (!this._sbAside) return;
+      this._sbAside.style.display = 'flex';
+      this.renderSidebar();
+    }
+    closeSidebar() {
+      if (!this._sbAside) return;
+      this._sbAside.style.display = 'none';
+      this._sbHideMenu();
+      this.sbMenuFor = null;
+    }
+    toggleSidebar() {
+      if (this.sidebarOpen()) this.closeSidebar(); else this.openSidebar();
+    }
+
+    /**
+     * Render (or re-render) the sidebar list from core.marks in document
+     * order. Preserves which cards are expanded and any in-progress composer
+     * drafts/focus so a peer sync or local save does not wipe what the user
+     * is typing.
+     */
+    renderSidebar() {
+      if (!this._sbList) return;
+      const marks = sortedThreads(this.core.marks || []);
+      this._sbCount.textContent = marks.length ? String(marks.length) : '';
+      this._sbEmpty.style.display = marks.length ? 'none' : '';
+      this._sbList.textContent = '';
+      for (const m of marks) this._sbList.appendChild(this._sbCard(m));
+      if (this.sbMenuFor) this._sbHideMenu();
+      // Restore focus to the composer the user was typing in, if still present.
+      const key = this.sbFocusKey || (this.sbComposing ? { id: this.sbComposing.id, mode: this.sbComposing.mode } : null);
+      if (key) {
+        const ta = this._sbList.querySelector('[data-el="composer"][data-id="' + key.id + '"][data-mode="' + key.mode + '"]');
+        if (ta && ta.focus) {
+          const d = this.sbComposerDrafts[key.id];
+          if (d && d.mode === key.mode && d.value != null) ta.value = d.value;
+          ta.focus();
+          try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) { /* ignore */ }
+        }
+      }
+    }
+
+    _sbCard(m) {
+      const root = this.host('sidebar');
+      const isSug = m.kind === 'suggestion';
+      const open = this.sbOpenIds.has(m.id);
+      const card = this.h(root, 'div', 'sb-card' + (isSug ? ' suggestion' : '') + (open ? ' open' : '') + (m.id === this.sbActiveId ? ' active' : ''));
+      card.setAttribute('data-el', 'card');
+      card.setAttribute('data-id', m.id);
+
+      // header: badge · quote excerpt · author/time · ⋮
+      const head = this.h(root, 'div', 'sb-card-head');
+      const badge = this.h(root, 'span', 'badge ' + (isSug ? 'suggestion' : 'comment'), isSug ? 'Suggestion' : 'Comment');
+      const ctx = this.h(root, 'span', 'ctx', '“' + trunc(m.quote, 64) + '”');
+      const nMsg = Array.isArray(m.messages) ? m.messages.length : 0;
+      const when = this.h(root, 'span', 'when', (m.name || displayName(m.author)) + ' · ' + fmtTime(m.ts) + (isSug ? '' : (nMsg ? ' · ' + nMsg + (nMsg === 1 ? ' comment' : ' comments') : '')));
+      const more = this.h(root, 'button', 'sb-more', '⋮');
+      more.setAttribute('data-el', 'more');
+      more.title = 'Actions';
+      more.setAttribute('aria-label', 'Actions');
+      head.appendChild(badge);
+      head.appendChild(ctx);
+      head.appendChild(when);
+      head.appendChild(more);
+
+      // body: quote, (proposed), messages, composer
+      const body = this.h(root, 'div', 'sb-card-body');
+      const quote = this.h(root, 'p', 'quote', '“' + m.quote + '”');
+      body.appendChild(quote);
+
+      if (isSug) {
+        const pLabel = this.h(root, 'div', 'prop-label', 'Proposed replacement');
+        const draft = this.sbComposerDrafts[m.id];
+        const composing = this.sbComposing && this.sbComposing.id === m.id && this.sbComposing.mode === 'suggested';
+        body.appendChild(pLabel);
+        if (composing || (draft && draft.mode === 'suggested')) {
+          const ta = this.h(root, 'textarea', 'prop-input');
+          ta.setAttribute('data-el', 'composer');
+          ta.setAttribute('data-id', m.id);
+          ta.setAttribute('data-mode', 'suggested');
+          ta.maxLength = 5000;
+          ta.value = (draft && draft.value != null) ? draft.value : (m.proposed || m.quote);
+          body.appendChild(ta);
+          const row = this.h(root, 'div', 'sb-row');
+          const submit = this.h(root, 'button', 'primary', 'Submit suggestion');
+          submit.setAttribute('data-el', 'submit');
+          const cancel = this.h(root, 'button', null, 'Cancel');
+          cancel.setAttribute('data-el', 'cancel');
+          row.appendChild(submit);
+          row.appendChild(cancel);
+          body.appendChild(row);
+        } else {
+          const prop = this.h(root, 'p', 'prop', '“' + (m.proposed ? m.proposed : '(not submitted yet)') + '”');
+          body.appendChild(prop);
+        }
+      }
+
+      const msgs = Array.isArray(m.messages) ? m.messages : [];
+      if (msgs.length) {
+        const wrap = this.h(root, 'div', 'sb-msgs');
+        for (const msg of msgs) {
+          const el = this.h(root, 'div', 'sb-msg');
+          const who = this.h(root, 'div', 'who', '');
+          const nm = this.h(root, 'b', null, msg.name || displayName(m.author));
+          const tm = this.h(root, 'span', null, fmtTime(msg.ts));
+          who.appendChild(nm);
+          who.appendChild(tm);
+          const bodyEl = this.h(root, 'div', 'body', msg.body || '');
+          el.appendChild(who);
+          el.appendChild(bodyEl);
+          wrap.appendChild(el);
+        }
+        body.appendChild(wrap);
+      } else if (!isSug) {
+        body.appendChild(this.h(root, 'div', 'sb-none', 'No comments yet.'));
+      }
+
+      // reply composer — always visible: threads accumulate replies over time
+      const cDraft = this.sbComposerDrafts[m.id];
+      const comp = this.h(root, 'div', 'composer');
+      const ta = this.h(root, 'textarea');
+      ta.setAttribute('data-el', 'composer');
+      ta.setAttribute('data-id', m.id);
+      ta.setAttribute('data-mode', 'message');
+      ta.maxLength = 5000;
+      ta.placeholder = isSug ? 'Add a comment to this suggestion…' : 'Add a comment…';
+      ta.value = (cDraft && cDraft.mode === 'message' && cDraft.value != null) ? cDraft.value : '';
+      const row = this.h(root, 'div', 'sb-row');
+      const post = this.h(root, 'button', 'primary', isSug ? 'Comment' : 'Reply');
+      post.setAttribute('data-el', 'post');
+      const cancel = this.h(root, 'button', null, 'Cancel');
+      cancel.setAttribute('data-el', 'cancel');
+      row.appendChild(post);
+      row.appendChild(cancel);
+      comp.appendChild(ta);
+      comp.appendChild(row);
+      body.appendChild(comp);
+
+      card.appendChild(head);
+      card.appendChild(body);
+
+      // header toggles expand/collapse (but a click on ⋮ must not)
+      head.addEventListener('click', (e) => {
+        if (e.target === more) return;
+        this._sbToggle(m.id, card);
+      });
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._sbShowMenu(m, more);
+      });
+
+      // wire up composers / action buttons in this card
+      const sugTa = body.querySelector('[data-el="composer"][data-mode="suggested"]');
+      if (sugTa) {
+        const submit = body.querySelector('[data-el="submit"]');
+        const cancel = body.querySelector('[data-el="cancel"]');
+        submit.addEventListener('click', () => this._sbSubmitSuggestion(m.id, sugTa));
+        cancel.addEventListener('click', () => this._sbCancelSuggested(m.id));
+        sugTa.addEventListener('input', () => {
+          this.sbComposerDrafts[m.id] = { mode: 'suggested', value: sugTa.value };
+        });
+        sugTa.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) this._sbSubmitSuggestion(m.id, sugTa);
+        });
+      }
+      const msgTa = body.querySelector('[data-el="composer"][data-mode="message"]');
+      if (msgTa) {
+        const post = body.querySelector('[data-el="post"]');
+        const cancel = body.querySelector('[data-el="cancel"]');
+        post.addEventListener('click', () => this._sbPostMessage(m.id, msgTa));
+        cancel.addEventListener('click', () => {
+          msgTa.value = '';
+          delete this.sbComposerDrafts[m.id];
+        });
+        msgTa.addEventListener('input', () => {
+          this.sbComposerDrafts[m.id] = { mode: 'message', value: msgTa.value };
+        });
+        msgTa.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) this._sbPostMessage(m.id, msgTa);
+        });
+      }
+      return card;
+    }
+
+    _sbToggle(id, card) {
+      if (this.sbOpenIds.has(id)) {
+        this.sbOpenIds.delete(id);
+        if (card) card.classList.remove('open');
+      } else {
+        this.sbOpenIds.add(id);
+        if (card) card.classList.add('open');
+      }
+    }
+
+    _sbFindCard(id) {
+      return this._sbList && this._sbList.querySelector ? this._sbList.querySelector('[data-el="card"][data-id="' + id + '"]') : null;
+    }
+
+    _sbShowMenu(m, anchorEl) {
+      if (this.sbMenuFor === m.id) { this._sbHideMenu(); return; }
+      this._sbHideMenu();
+      this.sbMenuFor = m.id;
+      this.sbMenuMark = m;
+      const menu = this._sbMenu;
+      const root = this.host('sidebar');
+      // Re-parent the menu into the card so it is positioned relative to the
+      // card (the card is position:relative) and scrolls with it.
+      const card = this._sbFindCard(m.id);
+      if (card) card.appendChild(menu); else root.appendChild(menu);
+      if (card && card.classList) card.classList.add('menu-open');
+      menu.style.display = 'block';
+      const r = anchorEl.getBoundingClientRect();
+      const cr = card ? card.getBoundingClientRect() : this._sbAside.getBoundingClientRect();
+      // position just below the ⋮ button
+      menu.style.top = (r.bottom - cr.top + 4) + 'px';
+      menu.style.left = Math.max(4, r.left - cr.left) + 'px';
+    }
+
+    _sbHideMenu() {
+      if (this._sbMenu) {
+        this._sbMenu.style.display = 'none';
+        const card = this._sbMenu.parentNode;
+        if (card && card.classList && card.classList.contains('menu-open')) card.classList.remove('menu-open');
+      }
+      this.sbMenuFor = null;
+    }
+
+    _sbMenuAction(action) {
+      const m = this.sbMenuMark;
+      this._sbHideMenu();
+      if (!m) return;
+      if (action === 'delete') {
+        this._sbClearComposing(m.id);
+        this.core.deleteMark(m.id);
+        this.renderSidebar();
+      } else if (action === 'edit') {
+        if (m.kind === 'suggestion') {
+          this.sbComposing = { id: m.id, mode: 'suggested' };
+          this.sbComposerDrafts[m.id] = { mode: 'suggested', value: m.proposed || m.quote };
+        } else {
+          this.sbComposing = { id: m.id, mode: 'message' };
+          this.sbFocusKey = { id: m.id, mode: 'message' };
+        }
+        this.sbOpenIds.add(m.id);
+        this.renderSidebar();
+        const card = this._sbFindCard(m.id);
+        if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    _sbClearComposing(id) {
+      if (this.sbComposing && this.sbComposing.id === id) this.sbComposing = null;
+      if (this.sbFocusKey && this.sbFocusKey.id === id) this.sbFocusKey = null;
+      delete this.sbComposerDrafts[id];
+    }
+
+    _sbSubmitSuggestion(id, ta) {
+      const value = (ta.value || '').trim();
+      if (!value) { this.toast('Type the proposed replacement first'); return; }
+      const m = this.core.marks.find((x) => x.id === id);
+      if (!m) return;
+      this.core.updateThread(id, (t) => Object.assign({}, t, { proposed: value }));
+      this._sbClearComposing(id);
+      if (this.sbFocusKey && this.sbFocusKey.id === id) this.sbFocusKey = null;
+      this.sbOpenIds.add(id);
+      this.renderSidebar();
+    }
+
+    _sbPostMessage(id, ta) {
+      const value = (ta.value || '').trim();
+      if (!value) { this.toast('Write a comment first'); return; }
+      this.core.updateThread(id, (t) => appendMessage(t, value, this.localName(), Date.now()));
+      // Keep the composer focused for follow-up replies in the same thread.
+      delete this.sbComposerDrafts[id];
+      this.sbOpenIds.add(id);
+      this.renderSidebar();
+    }
+
+    _sbCancelSuggested(id) {
+      const m = this.core.marks.find((x) => x.id === id);
+      this._sbClearComposing(id);
+      // A suggestion that was never submitted and has no discussion is pure
+      // noise — discard the whole thread. Anything with content just closes
+      // the composer.
+      if (m && m.kind === 'suggestion' && !(m.proposed || '').trim() && !(Array.isArray(m.messages) && m.messages.length)) {
+        this.core.deleteMark(id);
+      }
+      this.renderSidebar();
+    }
+
+    /** Open the sidebar and expand + focus a specific thread. */
+    openThread(id, opts) {
+      opts = opts || {};
+      this.openSidebar();
+      this.sbActiveId = id;
+      this.sbOpenIds.add(id);
+      if (opts.compose) {
+        const m = this.core.marks.find((x) => x.id === id);
+        if (m) {
+          if (m.kind === 'suggestion') {
+            this.sbComposing = { id, mode: 'suggested' };
+            this.sbFocusKey = { id, mode: 'suggested' };
+            this.sbComposerDrafts[id] = { mode: 'suggested', value: m.quote };
+          } else {
+            this.sbComposing = { id, mode: 'message' };
+            this.sbFocusKey = { id, mode: 'message' };
+          }
+        }
+      }
+      this.renderSidebar();
+      const card = this._sbFindCard(id);
+      if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
+      return card;
     }
 
     /* ---- pair panel (overlay) ---- */
@@ -1263,61 +1756,101 @@
    * Appended to Core instances: selection → mark, update, delete, render,
    * restore. Kept as functions to stay close to the DOM.
    */
-  Core.prototype.createMarkFromSelection = function (color) {
-    if (!this.marks) return;
+  /**
+   * Resolve the current window selection to a slice of the flattened page
+   * text. Returns { s, e, quote, pre, post } or null.
+   */
+  Core.prototype.selectionSlice = function () {
     const doc = this.doc;
     const sel = doc.defaultView.getSelection();
-    if (!sel || !sel.rangeCount || sel.isCollapsed) return;
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return null;
     const range = sel.getRangeAt(0).cloneRange();
     const sp = D.resolvePoint(range.startContainer, range.startOffset);
     const ep = D.resolvePoint(range.endContainer, range.endOffset);
-    if (!sp || !ep) return;
+    if (!sp || !ep) return null;
     const idx = this.index();
     const s = nodeOffsetInIdx(idx, sp[0], sp[1]);
     const e = nodeOffsetInIdx(idx, ep[0], ep[1]);
-    if (s < 0 || e < 0 || s >= e) return;
+    if (s < 0 || e < 0 || s >= e) return null;
     const quote = idx.text.slice(s, e);
-    if (!quote.trim()) return;
-    if (quote.length > 5000) {
+    if (!quote.trim()) return null;
+    return {
+      s, e, quote,
+      pre: idx.text.slice(Math.max(0, s - 40), s),
+      post: idx.text.slice(e, e + 40),
+      text: idx.text,
+    };
+  };
+
+  /**
+   * Create a thread (comment or edit suggestion) anchored to the current
+   * selection. kind: 'comment' | 'suggestion'. The mark is created
+   * immediately (so the yellow highlight appears and the thread is tied to
+   * this exact selection); the user then composes in the sidebar — the first
+   * comment / proposed replacement is still pending. Returns { mark } or null.
+   */
+  Core.prototype.createMarkFromSelection = function (kind) {
+    if (!this.marks) return null;
+    const doc = this.doc;
+    const slice = this.selectionSlice();
+    if (!slice) return null;
+    if (slice.quote.length > 5000) {
       this.ui && this.ui.toast('Selection too long to mark (max 5000 chars)');
-      return;
+      return null;
     }
+    const name = this.ui ? this.ui.localName() : AUTHORS.me;
     const id = uid();
     const mark = {
       id,
-      quote,
-      pre: idx.text.slice(Math.max(0, s - 40), s),
-      post: idx.text.slice(e, e + 40),
-      offset: s,
+      kind: kind === 'suggestion' ? 'suggestion' : 'comment',
+      quote: slice.quote,
+      pre: slice.pre,
+      post: slice.post,
+      offset: slice.s,
       note: '',
-      author: 'me',
+      messages: [],
+      proposed: '',
+      author: LOCAL_ROLE,
+      name,
       ts: Date.now(),
-      color: COLORS[color] ? color : DEFAULT_COLOR,
+      color: DEFAULT_COLOR,
     };
-    const r = this.locate(mark, idx);
-    if (!r) return;
+    const r = this.locate(mark, this.index());
+    if (!r) return null;
     const wrappers = D.wrap(doc, r, id, mark.color);
-    if (!wrappers.length) return;
+    if (!wrappers.length) return null;
     this.marks.push(mark);
-    sel.removeAllRanges();
+    const sel = doc.defaultView.getSelection();
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
     this.save();
     this.emitChange();
-    if (this.ui) this.ui.editor.open(mark, wrappers[0]);
+    if (this.ui) this.ui.openThread(id, { compose: true });
+    return { mark };
   };
 
-  Core.prototype.updateMark = function (mark) {
-    // `this.marks` may have been replaced wholesale by the storage.onChanged
-    // listener (core.load() reloads a fresh, structurally-cloned array ~300ms
-    // after createMark's own pre-editor save). The object the editor holds
-    // (`mark`) can then be a stale reference no longer present in this.marks,
-    // so mutating mark.note would be silently dropped by the next save().
-    // Apply the note/ts onto the live entry found by id; if it was removed
-    // while editing, re-add the mark so the just-typed note is not lost.
-    // Same root cause + fix as version_a (48f4efb).
-    const live = this.marks.find((m) => m.id === mark.id);
-    if (live) { live.note = mark.note; live.ts = mark.ts; }
-    else { this.marks.push(mark); }
+  /**
+   * Apply a pure mutation to a live thread by id and persist.
+   * `mutate(thread) -> thread'` (use the pure helpers: appendMessage,
+   * updateMessage, deleteMessage, or Object.assign for e.g. `proposed`).
+   * The thread is looked up by id because `this.marks` may have been
+   * replaced wholesale by the storage.onChanged reload (the same stale-
+   * reference race that bit version_a — 48f4efb — and version_b 0.2.3).
+   */
+  Core.prototype.updateThread = function (id, mutate) {
+    const live = this.marks.find((m) => m.id === id);
+    if (!live) return false;
+    let next;
+    try {
+      next = mutate(live);
+    } catch (err) {
+      console.log('[TMB] updateThread mutate threw:', err && err.message || err);
+      return false;
+    }
+    if (!next || next === live) return true;
+    const i = this.marks.indexOf(live);
+    this.marks[i] = Object.assign({}, next, { id: live.id, ts: Date.now() });
     this.save().then(() => this.emitChange());
+    return true;
   };
 
   Core.prototype.deleteMark = function (id) {
@@ -1334,6 +1867,7 @@
       if (!this.wrapOne(m)) this.failed.push(m);
     }
     console.log('[TMB-PAIR] render: total=' + this.marks.length + ' rendered=' + (this.marks.length - this.failed.length) + ' failed=' + this.failed.length);
+    if (this.ui && this.ui.renderSidebar) this.ui.renderSidebar();
     this.scheduleRetry();
   };
 
@@ -1413,22 +1947,18 @@
     const ui = new UI(core, pair);
 
     core.load().then(() => {
-      ui.pillColor = core.color;
-      for (const d of ui.host('pill').querySelectorAll('.dot')) {
-        d.classList.toggle('sel', d.dataset.color === core.color);
-      }
       core.render();
       ui.updatePill();
       doc.documentElement.setAttribute('data-tmb-ready', '');
     });
 
     doc.addEventListener('selectionchange', () => {
-      if (ui.editor.current()) return;
+      if (ui.composerFocused()) return;
       ui.updatePill();
     });
     doc.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        ui.editor.close();
+        ui.dismissSidebar();
         ui.hidePanel();
       }
     });
@@ -1438,7 +1968,8 @@
       if (msg.type === 'tmb:toggle-panel') {
         ui.panel.toggle();
       } else if (msg.type === 'tmb:command') {
-        if (msg.cmd === 'comment') core.createMarkFromSelection(ui.pillColor);
+        if (msg.cmd === 'comment') core.createMarkFromSelection('comment');
+        else if (msg.cmd === 'toggle-sidebar') ui.toggleSidebar();
       }
       sendResponse({ ok: true });
     });
