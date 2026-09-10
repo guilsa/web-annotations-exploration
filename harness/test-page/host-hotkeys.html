@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pairshare host-hotkey isolation fixture</title>
+<script>
+  // These listeners intentionally run before Pairshare's document_idle
+  // content script. They model pages which own keyboard shortcuts globally.
+  (() => {
+    const records = [];
+    let shortcutCount = 0;
+    let interfere = true;
+
+    const editingKey = (event) =>
+      event.key.length === 1 ||
+      ['Backspace', 'Delete', 'Enter', 'Tab', 'ArrowLeft', 'ArrowRight',
+        'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key) ||
+      ((event.ctrlKey || event.metaKey) && ['a', 'c', 'v', 'x', 'z'].includes(event.key.toLowerCase()));
+
+    const record = (owner, phase) => (event) => {
+      records.push({
+        owner,
+        phase,
+        type: event.type,
+        key: event.key,
+        target: event.target && (event.target.id || event.target.tagName),
+        defaultPrevented: event.defaultPrevented,
+      });
+      if (interfere && owner === 'window' && phase === 'capture' &&
+          event.type === 'keydown' && editingKey(event)) {
+        event.preventDefault();
+        shortcutCount++;
+        document.getElementById('host-shortcut-count').textContent = String(shortcutCount);
+        document.getElementById('host-focus-target').focus();
+      }
+    };
+
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      window.addEventListener(type, record('window', 'capture'), true);
+      document.addEventListener(type, record('document', 'capture'), true);
+      document.addEventListener(type, record('document', 'bubble'), false);
+      window.addEventListener(type, record('window', 'bubble'), false);
+    }
+
+    window.__hostHotkeys = {
+      records,
+      clear() { records.length = 0; shortcutCount = 0; document.getElementById('host-shortcut-count').textContent = '0'; },
+      count() { return shortcutCount; },
+      setInterference(value) { interfere = !!value; },
+    };
+  })();
+</script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 24px auto; line-height: 1.5; }
+  #host-focus-target { width: 100%; padding: 8px; }
+</style>
+</head>
+<body>
+  <h1>Host keyboard-shortcut fixture</h1>
+  <p id="p1">The quick brown fox jumps over the lazy dog, and then it goes home to sleep in the warm barn by the river.</p>
+  <p id="p2">Second paragraph with bold inline text for a proposed replacement.</p>
+  <p id="p3">Third paragraph for Pairshare panel and persistence checks.</p>
+  <label>Host page control <input id="host-focus-target" value="host"></label>
+  <p>Host shortcut count: <output id="host-shortcut-count">0</output></p>
+</body>
+</html>

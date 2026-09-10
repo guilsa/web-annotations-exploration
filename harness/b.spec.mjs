@@ -6,6 +6,8 @@
  *     submit / cancel, ⋮ Edit to re-propose)
  *   - sidebar cards: context/author/timestamp/body, ⋮ Edit+Delete menu,
  *     expand/collapse, close control
+ *   - extension-origin editor isolation from pre-registered host keyboard
+ *     listeners on window/document in capture/bubble phases
  *   - a real WebRTC P2P session between two tabs (loopback host candidates,
  *     no STUN needed on one machine) with threads, replies, suggestions and
  *     deletions syncing live, including author identity (Riley/Jordan).
@@ -157,7 +159,30 @@ const sbCard = (pg, nth) => pg.locator('#tmb-sidebar [data-el="card"]').nth(nth 
 const cardText = (pg, nth) => sbCard(pg, nth).evaluate((el) => el.textContent);
 // The card whose header context matches `needle`.
 const sbCardWith = (pg, needle) => pg.locator('#tmb-sidebar [data-el="card"]', { hasText: needle });
-const sbComposer = (pg, cardLoc, mode) => cardLoc.locator(`[data-el="composer"][data-mode="${mode || 'message'}"]`);
+const editorTextarea = (frameLoc) => frameLoc.contentFrame().locator('textarea');
+const sbComposer = (pg, cardLoc, mode) => editorTextarea(
+  cardLoc.locator(`[data-el="composer"][data-mode="${mode || 'message'}"]`),
+);
+const panelEditor = (pg, name) => editorTextarea(pg.locator(`#tmb-panel [data-el="${name}"]`));
+async function waitEditorValue(loc, predicate, timeout = 15000) {
+  const end = Date.now() + timeout;
+  await loc.waitFor({ state: 'visible', timeout });
+  while (Date.now() < end) {
+    const value = await loc.inputValue();
+    if (predicate(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('timed out waiting for isolated editor value');
+}
+async function waitEditorReady(loc, timeout = 15000) {
+  await loc.waitFor({ state: 'visible', timeout });
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    if (await loc.getAttribute('data-tmb-ready') !== null) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('timed out waiting for isolated editor readiness');
+}
 
 /* Expand a card if it is collapsed (synced threads arrive collapsed). */
 async function ensureOpen(pg, cardLoc) {
@@ -199,7 +224,7 @@ async function newSuggestion(pg, sel, proposed) {
   await rclick(pg.locator('#tmb-pill [data-el="suggest"]'));
   const card = sb(pg).locator('[data-el="card"]').last();
   await card.waitFor({ state: 'visible', timeout: 5000 });
-  const ta = card.locator('[data-el="composer"][data-mode="suggested"]');
+  const ta = sbComposer(pg, card, 'suggested');
   await ta.waitFor({ state: 'visible', timeout: 5000 });
   if (proposed !== null) await rfill(ta, proposed);
   await rclick(card.locator('[data-el="submit"]'));
@@ -235,6 +260,152 @@ console.log(`\n=== version_b e2e (base ${BASE}) ===`);
 await page.goto(BASE + '/');
 await waitBooted(page);
 
+/* ---------------- hostile host-page keyboard listeners ---------------- */
+
+const hotkeyPage = await ctx.newPage();
+hotkeyPage.on('pageerror', (e) => console.log('[pageerror hotkeys]', (e.stack || e.message).split('\n')[0]));
+await sw.evaluate(async () => { await chrome.storage.local.remove('tmb.pages'); });
+await hotkeyPage.goto(BASE + '/host-hotkeys.html');
+await waitBooted(hotkeyPage);
+const primaryMod = process.platform === 'darwin' ? 'Meta' : 'Control';
+
+await test('B19 isolated sidebar editor defeats pre-registered host capture/bubble hotkeys', async () => {
+  await selectWhole(hotkeyPage, '#p1');
+  await rclick(hotkeyPage.locator('#tmb-pill [data-el="comment"]'));
+  const card = sb(hotkeyPage).locator('[data-el="card"]').last();
+  const ta = sbComposer(hotkeyPage, card, 'message');
+  await waitEditorReady(ta);
+  await ta.focus();
+
+  await hotkeyPage.keyboard.type('sdjk/rfbn? alpha', { delay: 15 });
+  eq(await ta.inputValue(), 'sdjk/rfbn? alpha', 'shortcut-heavy text entered exactly');
+  await hotkeyPage.keyboard.press('Home');
+  await hotkeyPage.keyboard.press('ArrowRight');
+  await hotkeyPage.keyboard.press('ArrowRight');
+  await hotkeyPage.keyboard.press('Delete');
+  await hotkeyPage.keyboard.press('End');
+  await hotkeyPage.keyboard.press('Backspace');
+  eq(await ta.inputValue(), 'sdk/rfbn? alph', 'caret, Delete and Backspace edit normally');
+  await hotkeyPage.keyboard.press('PageUp');
+  await hotkeyPage.keyboard.press('PageDown');
+  await hotkeyPage.keyboard.press('End');
+  await hotkeyPage.keyboard.press('Enter');
+  await hotkeyPage.keyboard.type('z!');
+  eq(await ta.inputValue(), 'sdk/rfbn? alph\nz!', 'Enter inserts a newline');
+
+  eq(await hotkeyPage.evaluate(() => window.__hostHotkeys.count()), 0, 'host interference never ran');
+  eq(await hotkeyPage.evaluate(() => window.__hostHotkeys.records.length), 0,
+    'no editor keyboard event entered the parent DOM event path');
+});
+
+await test('B20 isolated editor preserves select/copy/cut/paste/undo and Tab focus navigation', async () => {
+  const card = sb(hotkeyPage).locator('[data-el="card"]').last();
+  const ta = sbComposer(hotkeyPage, card, 'message');
+  await ta.focus();
+  await hotkeyPage.keyboard.press(primaryMod + '+A');
+  await hotkeyPage.keyboard.type('copy me');
+  await hotkeyPage.keyboard.press(primaryMod + '+A');
+  await hotkeyPage.keyboard.press(primaryMod + '+C');
+  await hotkeyPage.keyboard.press('End');
+  await hotkeyPage.keyboard.press('Enter');
+  await hotkeyPage.keyboard.press(primaryMod + '+V');
+  eq(await ta.inputValue(), 'copy me\ncopy me', 'copy and paste preserve native editing');
+  for (let i = 0; i < 'copy me'.length; i++) await hotkeyPage.keyboard.press('Shift+ArrowLeft');
+  await hotkeyPage.keyboard.press(primaryMod + '+X');
+  eq(await ta.inputValue(), 'copy me\n', 'cut preserves the first line');
+  await hotkeyPage.keyboard.press(primaryMod + '+V');
+  await hotkeyPage.keyboard.press(primaryMod + '+Z');
+  await hotkeyPage.keyboard.press(primaryMod + '+Z');
+  eq(await ta.inputValue(), 'copy me\ncopy me', 'undo restores the cut text');
+
+  await hotkeyPage.keyboard.press('Tab');
+  eq(await card.locator('[data-el="post"]').evaluate((el) => el.getRootNode().activeElement === el), true,
+    'Tab leaves the editor for the next Pairshare control');
+  await ta.focus();
+  await hotkeyPage.keyboard.press('Shift+Tab');
+  eq(await card.locator('[data-el="more"]').evaluate((el) => el.getRootNode().activeElement === el), true,
+    'Shift+Tab moves to the previous Pairshare control');
+  await ta.focus();
+
+  await hotkeyPage.keyboard.press(primaryMod + '+Enter');
+  await hotkeyPage.waitForFunction(() => {
+    const host = document.querySelector('#tmb-sidebar');
+    const card = host && host.shadowRoot && host.shadowRoot.querySelector('[data-el="card"]');
+    return card && card.textContent.includes('copy me');
+  });
+  eq(await hotkeyPage.evaluate(() => window.__hostHotkeys.records.length), 0,
+    'editing chords, Tab and submit chord stayed out of the host event path');
+});
+
+await test('B21 proposed replacement and panel code editors are isolated; Escape remains deliberate', async () => {
+  await selectWhole(hotkeyPage, '#p2');
+  await rclick(hotkeyPage.locator('#tmb-pill [data-el="suggest"]'));
+  const suggestion = sb(hotkeyPage).locator('[data-el="card"]').last();
+  const proposal = sbComposer(hotkeyPage, suggestion, 'suggested');
+  await waitEditorReady(proposal);
+  await proposal.focus();
+  await hotkeyPage.keyboard.press(primaryMod + '+A');
+  await hotkeyPage.keyboard.type('sdjk/rfbn? proposed -> value;', { delay: 10 });
+  eq(await proposal.inputValue(), 'sdjk/rfbn? proposed -> value;', 'proposal accepts real keyboard input');
+  await hotkeyPage.keyboard.press(primaryMod + '+Enter');
+  await hotkeyPage.waitForFunction(() => {
+    const host = document.querySelector('#tmb-sidebar');
+    return host && host.shadowRoot && host.shadowRoot.textContent.includes('sdjk/rfbn? proposed -> value;');
+  });
+
+  await setPanel(hotkeyPage, true);
+  await rclick(hotkeyPage.locator('#tmb-panel .tabs button', { hasText: 'Join' }));
+  const code = panelEditor(hotkeyPage, 'invite-in');
+  await waitEditorReady(code);
+  await code.focus();
+  const codeText = 'v=0/abc+DEF_123? x=y; {code}';
+  await hotkeyPage.keyboard.type(codeText, { delay: 10 });
+  eq(await code.inputValue(), codeText, 'writable panel code accepts real keyboard input');
+  await rclick(hotkeyPage.locator('#tmb-panel .tabs button', { hasText: /^Invite/ }));
+  const joinCode = panelEditor(hotkeyPage, 'join-in');
+  await waitEditorReady(joinCode);
+  await joinCode.focus();
+  const joinText = 'answer/SDP+456? line=one;';
+  await hotkeyPage.keyboard.type(joinText, { delay: 10 });
+  eq(await joinCode.inputValue(), joinText, 'second writable panel code editor accepts real keyboard input');
+  eq(await hotkeyPage.evaluate(() => window.__hostHotkeys.records.length), 0,
+    'sidebar, proposal and panel editor events all stayed in child frames');
+
+  await hotkeyPage.keyboard.press('Escape');
+  await hotkeyPage.waitForTimeout(100);
+  assert(!(await panelOpen(hotkeyPage)), 'Escape closes the panel');
+  assert(!(await sidebarVisible(hotkeyPage)), 'Escape preserves Pairshare sidebar dismissal');
+});
+
+await test('B22 host key listeners still receive every phase/type when focus returns to the page', async () => {
+  await hotkeyPage.evaluate(() => {
+    window.__hostHotkeys.clear();
+    window.__hostHotkeys.setInterference(false);
+    document.querySelector('#host-focus-target').focus();
+  });
+  await hotkeyPage.keyboard.press('q');
+  const coverage = await hotkeyPage.evaluate(() => window.__hostHotkeys.records.map((r) =>
+    r.owner + ':' + r.phase + ':' + r.type));
+  for (const type of ['keydown', 'keypress', 'keyup']) {
+    for (const ownerPhase of ['window:capture', 'document:capture', 'document:bubble', 'window:bubble']) {
+      assert(coverage.includes(ownerPhase + ':' + type), 'missing host listener coverage: ' + ownerPhase + ':' + type);
+    }
+  }
+  await hotkeyPage.evaluate(() => {
+    window.__hostHotkeys.clear();
+    window.__hostHotkeys.setInterference(true);
+    document.querySelector('#host-focus-target').focus();
+  });
+  await hotkeyPage.keyboard.press('s');
+  eq(await hotkeyPage.evaluate(() => window.__hostHotkeys.count()), 1,
+    'the hostile shortcut runs normally with host-page focus');
+});
+
+await hotkeyPage.close();
+await sw.evaluate(async () => { await chrome.storage.local.remove('tmb.pages'); });
+await page.goto(BASE + '/');
+await waitBooted(page);
+
 /* ---------------- core: comment threads ---------------- */
 
 await test('B1 pill offers Comment + Suggest edit (no color dots); comment thread posts in sidebar', async () => {
@@ -254,7 +425,7 @@ await test('B1 pill offers Comment + Suggest edit (no color dots); comment threa
   assert(txt.includes('Comment'), 'comment badge, got: ' + txt.slice(0, 120));
   assert(txt.includes('The quick brown fox'), 'context quote shown');
   assert(txt.includes('Riley'), 'author identity (Riley) shown');
-  const ta = card.locator('[data-el="composer"][data-mode="message"]');
+  const ta = sbComposer(page, card, 'message');
   await rfill(ta, 'first message in thread');
   await rclick(card.locator('[data-el="post"]'));
   await page.waitForFunction(() => {
@@ -354,7 +525,7 @@ await test('B10 first post keeps the message (storage.onChanged reference race)'
   await selectWhole(page, '#p1');
   await rclick(page.locator('#tmb-pill [data-el="comment"]'));
   const card = sb(page).locator('[data-el="card"]').last();
-  const ta = card.locator('[data-el="composer"][data-mode="message"]');
+  const ta = sbComposer(page, card, 'message');
   await rclick(ta);
   await page.keyboard.type('first post kept', { delay: 40 });
   await page.waitForTimeout(500); // run the storage.onChanged debounce
@@ -421,30 +592,20 @@ await test('B3 pair handshake: invite (page1) + join (page2) -> both connected',
   await setPanel(page, true);
   await waitStatus(page, 'Not paired');
   await rclick(page.locator('#tmb-panel [data-el="gen"]'));
-  await page.waitForFunction(() => {
-    const el = document.querySelector('#tmb-panel');
-    const ta = el && el.shadowRoot && el.shadowRoot.querySelector('[data-el="invite-out"]');
-    return ta && ta.value.length > 100;
-  }, { timeout: 15000 });
-  const invite = await page.locator('#tmb-panel [data-el="invite-out"]').inputValue();
+  const invite = await waitEditorValue(panelEditor(page, 'invite-out'), (value) => value.length > 100);
   assert(invite.length > 100, 'invite code generated');
 
   // page2: join
   await setPanel(p2, true);
   await rclick(p2.locator('#tmb-panel .tabs button', { hasText: 'Join' }));
-  await rfill(p2.locator('#tmb-panel [data-el="invite-in"]'), invite);
+  await rfill(panelEditor(p2, 'invite-in'), invite);
   await rclick(p2.locator('#tmb-panel [data-el="gen-join"]'));
-  await p2.waitForFunction(() => {
-    const el = document.querySelector('#tmb-panel');
-    const ta = el && el.shadowRoot && el.shadowRoot.querySelector('[data-el="join-out"]');
-    return ta && ta.value.length > 100;
-  }, { timeout: 15000 });
-  const joinCode = await p2.locator('#tmb-panel [data-el="join-out"]').inputValue();
+  const joinCode = await waitEditorValue(panelEditor(p2, 'join-out'), (value) => value.length > 100);
   assert(joinCode.length > 100, 'join code generated');
 
   // page1: connect
   await page.bringToFront();
-  await rfill(page.locator('#tmb-panel [data-el="join-in"]'), joinCode);
+  await rfill(panelEditor(page, 'join-in'), joinCode);
   await rclick(page.locator('#tmb-panel [data-el="connect"]'));
   await waitStatus(page, 'Connected');
   await waitStatus(p2, 'Connected');
@@ -483,7 +644,7 @@ await test('B14 live sync: reply from page2 (Jordan) accumulates on page1, chron
   await p2.bringToFront();
   const card = sbCardWith(p2, 'Second paragraph').first();
   await ensureOpen(p2, card);
-  await rfill(card.locator('[data-el="composer"][data-mode="message"]'), 'reply from the other browser');
+  await rfill(sbComposer(p2, card, 'message'), 'reply from the other browser');
   await rclick(card.locator('[data-el="post"]'));
   // page1 sees both messages in order
   await page.bringToFront();
@@ -537,7 +698,7 @@ await test('B16 live sync: suggestion (page2/Jordan) + reply (page1/Riley)', asy
   assert(sugTxt.includes('Third paragraph, plain and simple'), 'original passage shown as context');
   // page1 replies to the suggestion (expand the synced card first)
   await ensureOpen(page, sug);
-  await rfill(sug.locator('[data-el="composer"][data-mode="message"]'), 'good catch, +1');
+  await rfill(sbComposer(page, sug, 'message'), 'good catch, +1');
   await rclick(sug.locator('[data-el="post"]'));
   await p2.waitForFunction(() => {
     const el = document.querySelector('#tmb-sidebar');
@@ -552,7 +713,7 @@ await test('B17 live sync: ⋮ Edit re-proposes; the new proposed reaches the pe
   const sug = sbCardWith(p2, 'Third paragraph').first();
   await rclick(sug.locator('[data-el="more"]'));
   await rclick(sb(p2).locator('[data-el="menu-edit"]'));
-  const ta = sug.locator('[data-el="composer"][data-mode="suggested"]');
+  const ta = sbComposer(p2, sug, 'suggested');
   await ta.waitFor({ state: 'visible', timeout: 3000 });
   await rfill(ta, 'Third paragraph, revised again.');
   await rclick(sug.locator('[data-el="submit"]'));
@@ -574,9 +735,9 @@ await test('B18 suggestion cancel: composing is discarded, nothing created', asy
   // the draft is the only card showing a suggested composer
   const card = sb(p2).locator('[data-el="card"]:has([data-el="composer"][data-mode="suggested"])');
   await card.waitFor({ state: 'visible', timeout: 5000 });
-  const ta = card.locator('[data-el="composer"][data-mode="suggested"]');
+  const ta = sbComposer(p2, card, 'suggested');
   // the input is pre-filled with the selected passage
-  const pre = await ta.inputValue();
+  const pre = await waitEditorValue(ta, (value) => value.length > 0);
   assert(pre.length > 0, 'proposed input pre-filled with selection');
   await rfill(ta, 'abandoned proposal');
   await rclick(card.locator('[data-el="cancel"]').first());

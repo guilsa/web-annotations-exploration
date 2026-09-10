@@ -881,6 +881,13 @@
       width: 100%; min-height: 56px; resize: vertical; padding: 6px 8px;
       border: 1px solid #d1d5db; border-radius: 6px; font-size: 12.5px; font-family: inherit;
     }
+    iframe.editor-frame {
+      display: block; width: 100%; padding: 0; border: 0; border-radius: 6px;
+      background: #fff; color-scheme: light;
+    }
+    .composer iframe.editor-frame { height: 70px; }
+    iframe.editor-frame.prop-input { height: 78px; min-height: 78px; resize: none; }
+    .pane iframe.editor-frame { height: 100px; margin: 0; }
     .sb-menu { position: absolute;
       background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
       box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; min-width: 110px; z-index: 10; }
@@ -939,6 +946,195 @@
       if (cls) el.className = cls;
       if (text != null) el.textContent = text;
       return el;
+    }
+
+    /**
+     * Create a textarea in a separate extension-origin browsing context.
+     * Native keyboard events terminate in that frame instead of traversing
+     * the host page's window/document event path. The field value crosses an
+     * extension-runtime Port broker, never a page-visible MessageEvent.
+     */
+    editor(root, cls, kind) {
+      const frame = this.h(root, 'iframe', 'editor-frame' + (cls ? ' ' + cls : ''));
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      const id = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      const state = {
+        value: '', placeholder: '', readOnly: false, maxLength: 5000,
+        kind: kind || 'text', version: 0, seq: -1,
+        selectionStart: 0, selectionEnd: 0, ready: false, focusPending: false,
+      };
+      const reads = new Map();
+      let nextReadId = 1;
+      const port = browser.runtime.connect({ name: 'tmb-editor-core:' + id });
+      const send = (msg) => {
+        try { port.postMessage(msg); } catch (_) { /* editor is tearing down */ }
+      };
+      const snapshot = (type) => ({
+        type,
+        version: state.version,
+        value: state.value,
+        placeholder: state.placeholder,
+        readOnly: state.readOnly,
+        maxLength: state.maxLength,
+        kind: state.kind,
+        selectionStart: state.selectionStart,
+        selectionEnd: state.selectionEnd,
+      });
+      const update = () => {
+        state.version++;
+        state.seq = -1;
+        if (state.ready) send(snapshot('set-state'));
+      };
+      const directEvent = (name) => frame.dispatchEvent(new Event(name));
+
+      Object.defineProperties(frame, {
+        value: {
+          get: () => state.value,
+          set: (value) => {
+            state.value = String(value == null ? '' : value).slice(0, state.maxLength);
+            state.selectionStart = state.selectionEnd = state.value.length;
+            update();
+          },
+        },
+        placeholder: {
+          get: () => state.placeholder,
+          set: (value) => { state.placeholder = String(value == null ? '' : value).slice(0, 500); update(); },
+        },
+        readOnly: {
+          get: () => state.readOnly,
+          set: (value) => { state.readOnly = !!value; update(); },
+        },
+        maxLength: {
+          get: () => state.maxLength,
+          set: (value) => {
+            const n = Number(value);
+            if (Number.isSafeInteger(n) && n > 0 && n <= 10000) {
+              state.maxLength = n;
+              if (state.value.length > n) state.value = state.value.slice(0, n);
+              update();
+            }
+          },
+        },
+      });
+      frame.tmbFocus = () => {
+        state.focusPending = true;
+        try { HTMLIFrameElement.prototype.focus.call(frame); } catch (_) { /* fake DOM/unit parse */ }
+        if (state.ready) send({ type: 'focus' });
+      };
+      frame.tmbSetSelectionRange = (start, end) => {
+        state.selectionStart = Math.max(0, Math.min(state.value.length, Number(start) || 0));
+        state.selectionEnd = Math.max(state.selectionStart, Math.min(state.value.length, Number(end) || 0));
+        update();
+      };
+      frame.tmbReadValue = () => new Promise((resolve) => {
+        if (!state.ready) { resolve(state.value); return; }
+        const requestId = nextReadId++;
+        const timer = setTimeout(() => {
+          reads.delete(requestId);
+          resolve(state.value);
+        }, 1000);
+        reads.set(requestId, { resolve, timer });
+        send({ type: 'get-state', requestId });
+      });
+      frame.tmbDispose = () => {
+        for (const pending of reads.values()) {
+          clearTimeout(pending.timer);
+          pending.resolve(state.value);
+        }
+        reads.clear();
+        if (this.activeEditor === frame) this.activeEditor = null;
+        try { port.disconnect(); } catch (_) { /* already disconnected */ }
+      };
+      port.onMessage.addListener((msg) => {
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'ready') {
+          state.ready = true;
+          send(snapshot('init'));
+          if (state.focusPending) send({ type: 'focus' });
+          return;
+        }
+        if (msg.type === 'input' && msg.version === state.version &&
+            Number.isSafeInteger(msg.seq) && msg.seq > state.seq &&
+            typeof msg.value === 'string' && msg.value.length <= state.maxLength) {
+          state.seq = msg.seq;
+          state.value = msg.value;
+          state.selectionStart = msg.selectionStart;
+          state.selectionEnd = msg.selectionEnd;
+          this.lastEditorInput = Date.now();
+          directEvent('input');
+          if (this._sbRenderPending) this.scheduleSidebarRender();
+        } else if (msg.type === 'selection' && msg.version === state.version &&
+                   Number.isSafeInteger(msg.selectionStart) && Number.isSafeInteger(msg.selectionEnd)) {
+          state.selectionStart = msg.selectionStart;
+          state.selectionEnd = msg.selectionEnd;
+        } else if (msg.type === 'focus') {
+          this.activeEditor = frame;
+          directEvent('tmb-focus');
+        } else if (msg.type === 'blur') {
+          if (this.activeEditor === frame) this.activeEditor = null;
+          if (this._sbRenderPending) {
+            clearTimeout(this._sbRenderTimer);
+            this._sbRenderTimer = setTimeout(() => {
+              if (this._sbRenderPending) this.renderSidebar(true);
+            }, 50);
+          }
+        } else if (msg.type === 'state' && Number.isSafeInteger(msg.requestId)) {
+          const pending = reads.get(msg.requestId);
+          if (pending && msg.version === state.version && typeof msg.value === 'string') {
+            clearTimeout(pending.timer);
+            reads.delete(msg.requestId);
+            state.value = msg.value.slice(0, state.maxLength);
+            state.selectionStart = msg.selectionStart;
+            state.selectionEnd = msg.selectionEnd;
+            pending.resolve(state.value);
+          }
+        } else if (msg.type === 'action' && msg.action === 'submit') {
+          directEvent('tmb-submit');
+        } else if (msg.type === 'action' && msg.action === 'escape') {
+          this.dismissSidebar();
+          this.hidePanel();
+        } else if (msg.type === 'action' && (msg.action === 'tab-next' || msg.action === 'tab-prev')) {
+          this.moveEditorFocus(frame, msg.action === 'tab-next' ? 1 : -1);
+        }
+      });
+      frame.setAttribute('data-tmb-editor', id);
+      frame.setAttribute('title', kind === 'code' ? 'Pairshare code editor' : 'Pairshare text editor');
+      frame.src = browser.runtime.getURL('editor.html') + '#' + id;
+      return frame;
+    }
+
+    disposeEditors(container) {
+      if (!container || !container.querySelectorAll) return;
+      for (const editor of container.querySelectorAll('[data-tmb-editor]')) {
+        if (editor.tmbDispose) editor.tmbDispose();
+      }
+    }
+
+    moveEditorFocus(editor, direction) {
+      const root = editor && editor.getRootNode ? editor.getRootNode() : null;
+      if (!root || !root.querySelectorAll) return;
+      const candidates = Array.from(root.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+        'iframe[data-tmb-editor]'
+      )).filter((el) => el.isConnected && el.getClientRects && el.getClientRects().length);
+      const at = candidates.indexOf(editor);
+      const next = at >= 0 ? candidates[at + direction] : null;
+      if (!next) return;
+      if (next.tmbFocus) next.tmbFocus();
+      else if (next.focus) next.focus();
+    }
+
+    scheduleSidebarRender() {
+      clearTimeout(this._sbRenderTimer);
+      const quietFor = Date.now() - (this.lastEditorInput || 0);
+      const delay = Math.max(0, 300 - quietFor);
+      this._sbRenderTimer = setTimeout(() => {
+        if (!this._sbRenderPending) return;
+        const nowQuiet = Date.now() - (this.lastEditorInput || 0);
+        if (nowQuiet < 300) this.scheduleSidebarRender();
+        else this.renderSidebar(true);
+      }, delay);
     }
 
     toast(msg) {
@@ -1263,11 +1459,19 @@
      * drafts/focus so a peer sync or local save does not wipe what the user
      * is typing.
      */
-    renderSidebar() {
+    renderSidebar(force) {
       if (!this._sbList) return;
+      if (!force && this.activeEditor && this.activeEditor.isConnected) {
+        this._sbRenderPending = true;
+        this.scheduleSidebarRender();
+        return;
+      }
+      this._sbRenderPending = false;
+      clearTimeout(this._sbRenderTimer);
       const marks = sortedThreads(this.core.marks || []);
       this._sbCount.textContent = marks.length ? String(marks.length) : '';
       this._sbEmpty.style.display = marks.length ? 'none' : '';
+      this.disposeEditors(this._sbList);
       this._sbList.textContent = '';
       for (const m of marks) this._sbList.appendChild(this._sbCard(m));
       if (this.sbMenuFor) this._sbHideMenu();
@@ -1275,11 +1479,11 @@
       const key = this.sbFocusKey || (this.sbComposing ? { id: this.sbComposing.id, mode: this.sbComposing.mode } : null);
       if (key) {
         const ta = this._sbList.querySelector('[data-el="composer"][data-id="' + key.id + '"][data-mode="' + key.mode + '"]');
-        if (ta && ta.focus) {
+        if (ta && ta.tmbFocus) {
           const d = this.sbComposerDrafts[key.id];
           if (d && d.mode === key.mode && d.value != null) ta.value = d.value;
-          ta.focus();
-          try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (_) { /* ignore */ }
+          ta.tmbFocus();
+          ta.tmbSetSelectionRange(ta.value.length, ta.value.length);
         }
       }
     }
@@ -1318,7 +1522,7 @@
         const composing = this.sbComposing && this.sbComposing.id === m.id && this.sbComposing.mode === 'suggested';
         body.appendChild(pLabel);
         if (composing || (draft && draft.mode === 'suggested')) {
-          const ta = this.h(root, 'textarea', 'prop-input');
+          const ta = this.editor(root, 'prop-input', 'text');
           ta.setAttribute('data-el', 'composer');
           ta.setAttribute('data-id', m.id);
           ta.setAttribute('data-mode', 'suggested');
@@ -1362,7 +1566,7 @@
       // reply composer — always visible: threads accumulate replies over time
       const cDraft = this.sbComposerDrafts[m.id];
       const comp = this.h(root, 'div', 'composer');
-      const ta = this.h(root, 'textarea');
+      const ta = this.editor(root, null, 'text');
       ta.setAttribute('data-el', 'composer');
       ta.setAttribute('data-id', m.id);
       ta.setAttribute('data-mode', 'message');
@@ -1403,8 +1607,9 @@
         sugTa.addEventListener('input', () => {
           this.sbComposerDrafts[m.id] = { mode: 'suggested', value: sugTa.value };
         });
-        sugTa.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) this._sbSubmitSuggestion(m.id, sugTa);
+        sugTa.addEventListener('tmb-submit', () => this._sbSubmitSuggestion(m.id, sugTa));
+        sugTa.addEventListener('tmb-focus', () => {
+          this.sbFocusKey = { id: m.id, mode: 'suggested' };
         });
       }
       const msgTa = body.querySelector('[data-el="composer"][data-mode="message"]');
@@ -1419,8 +1624,9 @@
         msgTa.addEventListener('input', () => {
           this.sbComposerDrafts[m.id] = { mode: 'message', value: msgTa.value };
         });
-        msgTa.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) this._sbPostMessage(m.id, msgTa);
+        msgTa.addEventListener('tmb-submit', () => this._sbPostMessage(m.id, msgTa));
+        msgTa.addEventListener('tmb-focus', () => {
+          this.sbFocusKey = { id: m.id, mode: 'message' };
         });
       }
       return card;
@@ -1498,8 +1704,9 @@
       delete this.sbComposerDrafts[id];
     }
 
-    _sbSubmitSuggestion(id, ta) {
-      const value = (ta.value || '').trim();
+    async _sbSubmitSuggestion(id, ta) {
+      const raw = ta.tmbReadValue ? await ta.tmbReadValue() : ta.value;
+      const value = (raw || '').trim();
       if (!value) { this.toast('Type the proposed replacement first'); return; }
       const m = this.core.marks.find((x) => x.id === id);
       if (!m) return;
@@ -1507,17 +1714,18 @@
       this._sbClearComposing(id);
       if (this.sbFocusKey && this.sbFocusKey.id === id) this.sbFocusKey = null;
       this.sbOpenIds.add(id);
-      this.renderSidebar();
+      this.renderSidebar(true);
     }
 
-    _sbPostMessage(id, ta) {
-      const value = (ta.value || '').trim();
+    async _sbPostMessage(id, ta) {
+      const raw = ta.tmbReadValue ? await ta.tmbReadValue() : ta.value;
+      const value = (raw || '').trim();
       if (!value) { this.toast('Write a comment first'); return; }
       this.core.updateThread(id, (t) => appendMessage(t, value, this.localName(), Date.now()));
       // Keep the composer focused for follow-up replies in the same thread.
       delete this.sbComposerDrafts[id];
       this.sbOpenIds.add(id);
-      this.renderSidebar();
+      this.renderSidebar(true);
     }
 
     _sbCancelSuggested(id) {
@@ -1529,7 +1737,7 @@
       if (m && m.kind === 'suggestion' && !(m.proposed || '').trim() && !(Array.isArray(m.messages) && m.messages.length)) {
         this.core.deleteMark(id);
       }
-      this.renderSidebar();
+      this.renderSidebar(true);
     }
 
     /** Open the sidebar and expand + focus a specific thread. */
@@ -1551,7 +1759,7 @@
           }
         }
       }
-      this.renderSidebar();
+      this.renderSidebar(true);
       const card = this._sbFindCard(id);
       if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
       return card;
@@ -1576,12 +1784,12 @@
       const paneInvite = this.h(root, 'div', 'pane on');
       const gen = this.h(root, 'button', 'primary', '1. Generate invite code');
       gen.setAttribute('data-el', 'gen');
-      const inviteOut = this.h(root, 'textarea');
+      const inviteOut = this.editor(root, null, 'code');
       inviteOut.setAttribute('data-el', 'invite-out');
       inviteOut.readOnly = true;
       inviteOut.placeholder = 'invite code appears here…';
       const copyInv = this.h(root, 'button', null, 'Copy invite code');
-      const joinIn = this.h(root, 'textarea');
+      const joinIn = this.editor(root, null, 'code');
       joinIn.setAttribute('data-el', 'join-in');
       joinIn.placeholder = 'paste the join code the other side sends you…';
       const connect = this.h(root, 'button', 'primary', 'Connect');
@@ -1600,12 +1808,12 @@
       // join pane
       const paneJoin = this.h(root, 'div', 'pane');
       const invInLabel = this.h(root, 'label', null, '1. Paste the invite code');
-      const invIn = this.h(root, 'textarea');
+      const invIn = this.editor(root, null, 'code');
       invIn.setAttribute('data-el', 'invite-in');
       invIn.placeholder = 'paste the invite code…';
       const genJoin = this.h(root, 'button', 'primary', '2. Create join code');
       genJoin.setAttribute('data-el', 'gen-join');
-      const joinOut = this.h(root, 'textarea');
+      const joinOut = this.editor(root, null, 'code');
       joinOut.setAttribute('data-el', 'join-out');
       joinOut.readOnly = true;
       joinOut.placeholder = 'join code appears here — send it back…';
@@ -1680,7 +1888,8 @@
       connect.addEventListener('click', async () => {
         busy(connect, true);
         try {
-          await this.pair.acceptJoin(joinIn.value);
+          const code = joinIn.tmbReadValue ? await joinIn.tmbReadValue() : joinIn.value;
+          await this.pair.acceptJoin(code);
           this.toast('Connecting… waiting for the data channel');
         } catch (e) {
           this.toast(e.message);
@@ -1690,7 +1899,8 @@
       genJoin.addEventListener('click', async () => {
         busy(genJoin, true);
         try {
-          const code = await this.pair.makeJoin(invIn.value);
+          const inviteCode = invIn.tmbReadValue ? await invIn.tmbReadValue() : invIn.value;
+          const code = await this.pair.makeJoin(inviteCode);
           joinOut.value = code;
           this.toast('Join code ready — send it back; the connection opens on both sides');
         } catch (e) {

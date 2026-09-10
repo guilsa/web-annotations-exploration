@@ -47,5 +47,11 @@
       "js": ["browser-shim.js", "content.js"],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["editor.html", "editor.js"],
+      "matches": ["<all_urls>"]
+    }
   ]
 }

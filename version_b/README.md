@@ -42,6 +42,11 @@ delete syncs in real time and is saved locally on both sides.
    highlight) to open it in the sidebar.
 7. `Alt+M` — comment on the current selection. `Alt+L` — open/close the
    sidebar. `Alt+P` (or the toolbar button) — open the Pair panel.
+8. Writable comment, suggestion, invite, and join fields run in small
+   extension-origin editor frames. Their keyboard events never enter the host
+   page's `window` / `document` event path, so pre-existing page hotkeys cannot
+   cancel typing or steal focus. Non-editable page/highlight UI stays in the
+   content script.
 
 ## Pairing (two browsers, same page URL)
 
@@ -66,11 +71,12 @@ sync in real time, with each side's author name (Riley / Jordan) attached.
 
 ```sh
 node tests/run-tests.js b     # 20 unit tests (threads, merge, codes, matcher, DOM)
-cd harness && node b.spec.mjs # 15 Playwright e2e tests — includes a REAL
+cd harness && node b.spec.mjs # 19 Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
 ```
 
-The e2e suite loads the real add-on into Chromium and verifies the comment
+The e2e suite loads the real add-on into Chromium and verifies isolated real
+keyboard entry against pre-registered hostile capture/bubble listeners, comment
 thread + suggestion flows, sidebar card behavior (expand/collapse, ⋮ menu,
 close control), and a genuine invite/join handshake with live thread / reply
 / suggestion / delete sync and session teardown across the two tabs.
@@ -84,10 +90,11 @@ close control), and a genuine invite/join handshake with live thread / reply
 
 | File | Role |
 |---|---|
-| `manifest.json` | MV3, cross-browser (Firefox + Chromium), `tmb:` commands `Alt+M` / `Alt+L` / `Alt+P` |
+| `manifest.json` | MV3, cross-browser (Firefox + Chromium), `tmb:` commands `Alt+M` / `Alt+L` / `Alt+P`, and the web-accessible isolated editor resources |
 | `browser-shim.js` | maps `chrome` → `browser` in Chromium (no-op in Firefox) |
-| `background.js` | service worker: relays toolbar + commands (`tmb:toggle-panel`, `tmb:command`) |
-| `content.js` | class-based core: `Core` (state/index/threads), `Pair` (WebRTC), `UI` (pill, comments sidebar with thread cards, hover card, pair overlay) + pure thread helpers |
+| `background.js` | service worker: relays toolbar/commands and brokers validated private ports between the core and isolated editors |
+| `content.js` | class-based core: `Core` (state/index/threads), `Pair` (WebRTC), `UI` (pill, comments sidebar with thread cards, hover card, pair overlay, editor adapters) + pure thread helpers |
+| `editor.html`, `editor.js` | extension-origin textarea context; preserves native editing while keeping keyboard events outside the host document |
 | `icons/` | blue palette |
 
 ## Known limits (by design)
