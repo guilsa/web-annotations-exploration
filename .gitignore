@@ -1,4 +1,6 @@
 .DS_Store
+*.crx
+*.pem
 harness/node_modules
 harness/.demo-work
 harness/.demo-linkshare-work
