@@ -514,22 +514,6 @@ function testB() {
       '> quote\n\n**Alicia:** Updated identity.');
   });
 
-  test('pure: mergePageStores keeps unique annotations and newer collisions', () => {
-    const local = {
-      'https://one.test/': { updated: 20, marks: [{ id: 'same', ts: 20, quote: 'local' }, { id: 'local', ts: 1, quote: 'local only' }] },
-    };
-    const imported = {
-      'https://one.test/': { updated: 30, marks: [{ id: 'same', ts: 30, quote: 'imported' }, { id: 'imported', ts: 2, quote: 'import only' }] },
-      'https://two.test/': { updated: 5, marks: [{ id: 'two', ts: 5, quote: 'second page' }] },
-    };
-    const merged = P.mergePageStores(local, imported);
-    eq(merged['https://one.test/'].marks.map((m) => [m.id, m.quote]), [
-      ['same', 'imported'], ['local', 'local only'], ['imported', 'import only'],
-    ]);
-    eq(merged['https://one.test/'].updated, 30);
-    eq(merged['https://two.test/'].marks.length, 1);
-  });
-
   test('pure: readBackup accepts version 1 and rejects unsupported files', () => {
     const valid = P.readBackup(JSON.stringify({
       format: 'textmarker-pairshare', version: 1,

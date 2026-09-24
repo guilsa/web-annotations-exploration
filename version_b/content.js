@@ -243,28 +243,6 @@
     }).join('\n\n---\n\n');
   }
 
-  /** Merge backup pages without treating absence from a backup as deletion. */
-  function mergePageStores(localPages, importedPages) {
-    const out = Object.assign({}, localPages || {});
-    for (const [url, importedPage] of Object.entries(importedPages || {})) {
-      if (url === '__proto__' || url === 'constructor' || url === 'prototype') continue;
-      if (!importedPage || !Array.isArray(importedPage.marks)) continue;
-      const localPage = out[url];
-      const localMarks = localPage && Array.isArray(localPage.marks) ? localPage.marks : [];
-      const byId = new Map(localMarks.map((mark) => [mark.id, mark]));
-      for (const mark of importedPage.marks) {
-        if (!mark || typeof mark !== 'object' || typeof mark.id !== 'string') continue;
-        const current = byId.get(mark.id);
-        if (!current || Number(mark.ts || 0) > Number(current.ts || 0)) byId.set(mark.id, mark);
-      }
-      out[url] = {
-        marks: Array.from(byId.values()),
-        updated: Math.max(Number(localPage && localPage.updated || 0), Number(importedPage.updated || 0)),
-      };
-    }
-    return out;
-  }
-
   const threadsEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   /**
@@ -326,7 +304,6 @@
       normalizeMarks,
       sortedThreads,
       threadsToMarkdown,
-      mergePageStores,
       readBackup,
     };
   }
@@ -1516,11 +1493,10 @@
       const confirmed = this.doc().defaultView.confirm(
         'Import ' + backup.markCount + ' annotation' + (backup.markCount === 1 ? '' : 's') +
         ' across ' + backup.pageCount + ' page' + (backup.pageCount === 1 ? '' : 's') +
-        '? Existing annotations are kept, newer matching records win, and this browser adopts the backup identity.'
+        '? This permanently replaces all Pairshare annotations, preferences, and identity in this browser.'
       );
       if (!confirmed) return;
       if (this.pair) this.pair.end();
-      const stored = await browser.storage.local.get([PAGES_KEY, AUTHORS_KEY]);
       const preferences = backup.preferences;
       const importedName = typeof preferences.displayName === 'string'
         ? preferences.displayName.trim().slice(0, 80) : configuredName;
@@ -1530,11 +1506,15 @@
         ? preferences.theme : uiTheme;
       const importedColor = typeof preferences.color === 'string' && COLORS[preferences.color]
         ? preferences.color : DEFAULT_COLOR;
-      const authors = Object.assign({}, stored[AUTHORS_KEY] || {}, backup.authors);
+      const authors = Object.assign({}, backup.authors);
       const importedAuthorId = backup.identity.authorId;
       authors[importedAuthorId] = importedName || authors[importedAuthorId] || AUTHORS.me;
+      await browser.storage.local.clear();
+      try {
+        if (browser.storage.sync) await browser.storage.sync.clear();
+      } catch (_) { /* local replacement still proceeds */ }
       await browser.storage.local.set({
-        [PAGES_KEY]: mergePageStores(stored[PAGES_KEY] || {}, backup.pages),
+        [PAGES_KEY]: backup.pages,
         [AUTHORS_KEY]: authors,
         [NAME_KEY]: importedName,
         [SUGGESTIONS_KEY]: importedSuggestions,
@@ -2772,6 +2752,12 @@
       if (!msg) return sendResponse({ ok: false });
       if (msg.type === 'tmb:toggle-panel') {
         ui.panel.toggle();
+      } else if (msg.type === 'tmb:open-sidebar') {
+        ui.openSidebar();
+      } else if (msg.type === 'tmb:import-data' && typeof msg.text === 'string' && msg.text.length <= 10 * 1024 * 1024) {
+        ui.importData(msg.text).catch((err) => {
+          ui.toast('Import failed: ' + (err && err.message ? err.message : 'unknown error'));
+        });
       } else if (msg.type === 'tmb:command') {
         if (msg.cmd === 'comment') core.createMarkFromSelection('comment');
         else if (msg.cmd === 'toggle-sidebar') ui.toggleSidebar();

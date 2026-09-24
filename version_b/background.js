@@ -18,10 +18,6 @@ async function sendToActiveTab(message) {
   }
 }
 
-browser.action.onClicked.addListener(() => {
-  sendToActiveTab({ type: 'tmb:toggle-panel' });
-});
-
 browser.commands.onCommand.addListener((command) => {
   if (command === 'comment-selection') {
     sendToActiveTab({ type: 'tmb:command', cmd: 'comment' });

@@ -45,8 +45,10 @@ delete syncs in real time and is saved locally on both sides.
    versioned JSON backup containing all pages, preferences, and author-name
    mappings. Import also adopts the exported installation identity so migrated
    comments remain attributable when moving to another machine or browser.
-8. `Alt+M` — comment on the current selection. `Alt+L` — open/close the
-   sidebar. `Alt+P` (or the toolbar button) — open the Pair panel.
+8. The toolbar icon opens a compact launcher for the comments sidebar,
+   Pairshare panel, and backup import. `Alt+M` comments on the current
+   selection, `Alt+L` opens/closes the sidebar, and `Alt+P` opens the Pair
+   panel directly.
 9. Writable comment, suggestion, invite, and join fields run in small
    extension-origin editor frames. Their keyboard events never enter the host
    page's `window` / `document` event path, so pre-existing page hotkeys cannot
@@ -75,7 +77,7 @@ sync in real time, with each side's author identity attached.
 ## Testing
 
 ```sh
-node tests/run-tests.js b     # 24 unit tests (threads, backup, identities, merge, matcher, DOM)
+node tests/run-tests.js b     # 23 unit tests (threads, backup, identities, merge, matcher, DOM)
 cd harness && node b.spec.mjs # 20 headless Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
 HEADED=1 node b.spec.mjs      # optional visible browser for debugging
@@ -115,6 +117,7 @@ when these preferences are enabled.
 | `manifest.json` | MV3, cross-browser (Firefox + Chromium), `tmb:` commands `Alt+M` / `Alt+L` / `Alt+P`, and the web-accessible isolated editor resources |
 | `browser-shim.js` | maps `chrome` → `browser` in Chromium (no-op in Firefox) |
 | `background.js` | service worker: relays toolbar/commands and brokers validated private ports between the core and isolated editors |
+| `popup.html`, `popup.js` | toolbar launcher for comments, pairing, and backup import |
 | `content.js` | class-based core: `Core` (state/index/threads), `Pair` (WebRTC), `UI` (pill, comments sidebar with thread cards, hover card, pair overlay, editor adapters) + pure thread helpers |
 | `editor.html`, `editor.js` | extension-origin textarea context; preserves native editing while keeping keyboard events outside the host document |
 | `icons/` | blue palette |

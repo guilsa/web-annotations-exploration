@@ -579,6 +579,7 @@ await test('B12 ⋮ menu Delete removes the thread and its highlight', async () 
 
 await test('B23 versioned backup exports and imports annotations with installation identity', async () => {
   await toggleSidebar(page, true);
+  const backedUpCount = await sbCardCount(page);
   await rclick(sb(page).locator('[data-el="global-actions"]'));
   const downloadReady = page.waitForEvent('download');
   await rclick(sb(page).locator('[data-el="global-menu"] button', { hasText: 'Export data' }));
@@ -591,6 +592,11 @@ await test('B23 versioned backup exports and imports annotations with installati
   assert(backup.data && backup.data.pages, 'backup includes pages');
   assert(backup.data.identity && backup.data.identity.authorId, 'backup includes portable installation identity');
 
+  // Create destination-only state after export. A migration import must reset
+  // it rather than merge it into the restored backup.
+  await newCommentThread(page, '#p4', 'destination-only annotation');
+  eq(await sbCardCount(page), backedUpCount + 1, 'destination-only annotation created after export');
+
   await rclick(sb(page).locator('[data-el="global-actions"]'));
   const chooserReady = page.waitForEvent('filechooser');
   await rclick(sb(page).locator('[data-el="global-menu"] button', { hasText: 'Import data' }));
@@ -601,7 +607,9 @@ await test('B23 versioned backup exports and imports annotations with installati
   await loaded;
   await waitBooted(page);
   await toggleSidebar(page, true);
-  assert(await sbCardCount(page) >= 1, 'annotations survive backup import reload');
+  eq(await sbCardCount(page), backedUpCount, 'backup restore replaces destination annotations');
+  assert(!(await sb(page).locator('[data-el="list"]').textContent()).includes('destination-only annotation'),
+    'post-export destination state was cleared');
 });
 
 /* ---------------- pairing ---------------- */
