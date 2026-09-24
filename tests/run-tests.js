@@ -514,6 +514,25 @@ function testB() {
       '> quote\n\n**Alicia:** Updated identity.');
   });
 
+  test('pure: threadsToMarkdown filters components with persisted option shape', () => {
+    const marks = [
+      { id: 'e', kind: 'comment', quote: 'no comment', offset: 0, messages: [] },
+      { id: 'c', kind: 'comment', quote: 'source', offset: 1,
+        messages: [{ id: 'm1', name: 'Alice', body: 'A comment.', ts: 2 }] },
+      { id: 's', kind: 'suggestion', quote: 'old', proposed: 'new', offset: 2,
+        messages: [{ id: 'm2', name: 'Bob', body: 'A reply.', ts: 3 }] },
+    ];
+    eq(P.threadsToMarkdown(marks, null, { selectedText: false, comments: true, suggestions: false }),
+      '**Alice:** A comment.\n\n---\n\n**Bob:** A reply.');
+    eq(P.threadsToMarkdown(marks, null, { selectedText: false, comments: false, suggestions: true }),
+      '**Suggested replacement:**\n\n> new');
+    eq(P.normalizeMarkdownOptions({ comments: false }),
+      { selectedText: true, commentedTextOnly: true, comments: false, suggestions: true });
+    eq(P.threadsToMarkdown(marks, null, {
+      selectedText: true, commentedTextOnly: true, comments: true, suggestions: false,
+    }), '> source\n\n**Alice:** A comment.\n\n---\n\n> old\n\n**Bob:** A reply.');
+  });
+
   test('pure: readBackup accepts version 1 and rejects unsupported files', () => {
     const valid = P.readBackup(JSON.stringify({
       format: 'textmarker-pairshare', version: 1,

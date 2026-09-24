@@ -77,8 +77,8 @@ sync in real time, with each side's author identity attached.
 ## Testing
 
 ```sh
-node tests/run-tests.js b     # 23 unit tests (threads, backup, identities, merge, matcher, DOM)
-cd harness && node b.spec.mjs # 20 headless Playwright e2e tests — includes a REAL
+node tests/run-tests.js b     # 24 unit tests (threads, backup, identities, merge, matcher, DOM)
+cd harness && node b.spec.mjs # 21 headless Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
 HEADED=1 node b.spec.mjs      # optional visible browser for debugging
 ```

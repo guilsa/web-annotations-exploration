@@ -224,14 +224,36 @@
       .join('\n');
   }
 
+  const DEFAULT_MARKDOWN_OPTIONS = Object.freeze({
+    selectedText: true,
+    commentedTextOnly: true,
+    comments: true,
+    suggestions: true,
+  });
+
+  function normalizeMarkdownOptions(options) {
+    const source = options && typeof options === 'object' ? options : {};
+    return {
+      selectedText: typeof source.selectedText === 'boolean' ? source.selectedText : true,
+      commentedTextOnly: typeof source.commentedTextOnly === 'boolean' ? source.commentedTextOnly : true,
+      comments: typeof source.comments === 'boolean' ? source.comments : true,
+      suggestions: typeof source.suggestions === 'boolean' ? source.suggestions : true,
+    };
+  }
+
   /** Serialize threads in document order for pasting into a Markdown-aware chat. */
-  function threadsToMarkdown(marks, resolveName) {
+  function threadsToMarkdown(marks, resolveName, options) {
+    const include = normalizeMarkdownOptions(options);
     return sortedThreads(normalizeMarks(marks || [])).map((thread) => {
-      const parts = [markdownQuote(thread.quote)];
-      if (thread.kind === 'suggestion' && String(thread.proposed || '').trim()) {
+      const parts = [];
+      const hasComments = (thread.messages || []).some((message) => String(message.body || '').trim());
+      if (include.selectedText && (!include.commentedTextOnly || !include.comments || hasComments)) {
+        parts.push(markdownQuote(thread.quote));
+      }
+      if (include.suggestions && thread.kind === 'suggestion' && String(thread.proposed || '').trim()) {
         parts.push('**Suggested replacement:**\n\n' + markdownQuote(thread.proposed));
       }
-      for (const message of thread.messages || []) {
+      for (const message of include.comments ? (thread.messages || []) : []) {
         const body = String(message.body || '').trim();
         if (!body) continue;
         const fallback = message.name || displayName(thread.author);
@@ -240,7 +262,7 @@
         parts.push('**' + name + ':** ' + body);
       }
       return parts.join('\n\n');
-    }).join('\n\n---\n\n');
+    }).filter(Boolean).join('\n\n---\n\n');
   }
 
   const threadsEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -303,6 +325,7 @@
       normalizeMark,
       normalizeMarks,
       sortedThreads,
+      normalizeMarkdownOptions,
       threadsToMarkdown,
       readBackup,
     };
@@ -321,6 +344,7 @@
   const NAME_KEY = 'tmb.displayName';
   const SUGGESTIONS_KEY = 'tmb.suggestionsEnabled';
   const THEME_KEY = 'tmb.theme';
+  const MARKDOWN_OPTIONS_KEY = 'tmb.markdownOptions';
   const INSTALLATION_ID_KEY = 'tmb.installationId';
   const AUTHORS_KEY = 'tmb.authors';
   const BACKUP_FORMAT = 'textmarker-pairshare';
@@ -328,6 +352,7 @@
   let configuredName = '';
   let suggestionsEnabled = true;
   let uiTheme = 'light';
+  let markdownOptions = Object.assign({}, DEFAULT_MARKDOWN_OPTIONS);
   let installationId = '';
   let knownAuthors = {};
 
@@ -427,6 +452,20 @@
     try {
       if (browser.storage.sync) await browser.storage.sync.set({ [THEME_KEY]: uiTheme });
     } catch (_) { /* local persistence still succeeded */ }
+  }
+
+  async function loadMarkdownOptions() {
+    try {
+      const local = await browser.storage.local.get(MARKDOWN_OPTIONS_KEY);
+      return normalizeMarkdownOptions(local[MARKDOWN_OPTIONS_KEY]);
+    } catch (_) {
+      return Object.assign({}, DEFAULT_MARKDOWN_OPTIONS);
+    }
+  }
+
+  async function saveMarkdownOptions(options) {
+    markdownOptions = normalizeMarkdownOptions(options);
+    await browser.storage.local.set({ [MARKDOWN_OPTIONS_KEY]: markdownOptions });
   }
 
   function readBackup(text) {
@@ -1031,6 +1070,20 @@
     .sb-global-menu button.danger:hover { background: #fee2e2; }
     .sb-global-menu button:disabled { color: #94a3b8; cursor: default; background: transparent; }
     .sb-global-separator { height: 1px; margin: 4px 6px; background: #e2e8f0; }
+    .sb-copy-panel { position: absolute; top: calc(100% + 4px); right: 0; width: 220px;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 10px; z-index: 21; color: #111827; }
+    .sb-copy-panel strong { display: block; margin-bottom: 8px; font-size: 12.5px; }
+    .sb-copy-panel label { display: flex; align-items: center; gap: 7px; padding: 4px 0;
+      font-size: 12.5px; cursor: pointer; }
+    .sb-copy-panel label.nested { padding-left: 22px; color: #475569; }
+    .sb-copy-panel label.disabled { opacity: .5; cursor: default; }
+    .sb-copy-panel input { margin: 0; }
+    .sb-copy-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+    .sb-copy-actions button { border: 1px solid #d1d5db; background: #f9fafb; color: #111827;
+      border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    .sb-copy-actions button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; font-weight: 600; }
+    .sb-copy-actions button:disabled { opacity: .5; cursor: default; }
     .sb-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
     .sb-empty { color: #6b7280; font-size: 12px; padding: 24px 16px; text-align: center; margin: auto; }
     .sb-card { position: relative; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
@@ -1108,6 +1161,7 @@
     :host([data-tmb-theme="dark"]) .sb-head,
     :host([data-tmb-theme="dark"]) .sb-card,
     :host([data-tmb-theme="dark"]) .sb-global-menu,
+    :host([data-tmb-theme="dark"]) .sb-copy-panel,
     :host([data-tmb-theme="dark"]) .sb-menu {
       background: #111827; color: #e5e7eb; border-color: #334155;
     }
@@ -1117,6 +1171,7 @@
     :host([data-tmb-theme="dark"]) .sb-card-body { border-color: #334155; }
     :host([data-tmb-theme="dark"]) button:not(.primary),
     :host([data-tmb-theme="dark"]) .sb-global-menu button,
+    :host([data-tmb-theme="dark"]) .sb-copy-actions button:not(.primary),
     :host([data-tmb-theme="dark"]) .sb-menu button {
       background: transparent; border-color: #475569; color: #e5e7eb;
     }
@@ -1447,6 +1502,7 @@
             displayName: configuredName,
             suggestionsEnabled,
             theme: uiTheme,
+            markdownOptions,
             color: stored[COLOR_KEY] || DEFAULT_COLOR,
           },
         },
@@ -1504,6 +1560,7 @@
         ? preferences.suggestionsEnabled : suggestionsEnabled;
       const importedTheme = preferences.theme === 'dark' || preferences.theme === 'light'
         ? preferences.theme : uiTheme;
+      const importedMarkdownOptions = normalizeMarkdownOptions(preferences.markdownOptions);
       const importedColor = typeof preferences.color === 'string' && COLORS[preferences.color]
         ? preferences.color : DEFAULT_COLOR;
       const authors = Object.assign({}, backup.authors);
@@ -1519,6 +1576,7 @@
         [NAME_KEY]: importedName,
         [SUGGESTIONS_KEY]: importedSuggestions,
         [THEME_KEY]: importedTheme,
+        [MARKDOWN_OPTIONS_KEY]: importedMarkdownOptions,
         [COLOR_KEY]: importedColor,
         [INSTALLATION_ID_KEY]: importedAuthorId,
       });
@@ -1749,7 +1807,7 @@
         suggestionsEnabled ? 'Disable suggestions' : 'Enable suggestions');
       const toggleTheme = this.h(root, 'button', null,
         uiTheme === 'dark' ? 'Use light mode' : 'Use dark mode');
-      const copyAll = this.h(root, 'button', null, 'Copy all as Markdown');
+      const copyAll = this.h(root, 'button', null, 'Copy as Markdown…');
       const exportData = this.h(root, 'button', null, 'Export data…');
       const importData = this.h(root, 'button', null, 'Import data…');
       const dataSeparator = this.h(root, 'div', 'sb-global-separator');
@@ -1771,6 +1829,36 @@
       headActions.appendChild(actions);
       headActions.appendChild(close);
       headActions.appendChild(globalMenu);
+      const copyPanel = this.h(root, 'div', 'sb-copy-panel');
+      copyPanel.setAttribute('data-el', 'copy-options');
+      copyPanel.style.display = 'none';
+      copyPanel.appendChild(this.h(root, 'strong', null, 'Copy as Markdown'));
+      const copyChecks = {};
+      const copyLabels = {};
+      for (const [key, labelText, className] of [
+        ['selectedText', 'Selected text', null],
+        ['commentedTextOnly', 'Only when it has comments', 'nested'],
+        ['comments', 'Comments', null],
+        ['suggestions', 'Suggestions', null],
+      ]) {
+        const label = this.h(root, 'label', className);
+        const checkbox = this.h(root, 'input');
+        checkbox.type = 'checkbox';
+        checkbox.setAttribute('data-option', key);
+        label.appendChild(checkbox);
+        label.appendChild(this.doc().createTextNode(labelText));
+        copyPanel.appendChild(label);
+        copyChecks[key] = checkbox;
+        copyLabels[key] = label;
+      }
+      const copyActions = this.h(root, 'div', 'sb-copy-actions');
+      const copyCancel = this.h(root, 'button', null, 'Cancel');
+      const copyConfirm = this.h(root, 'button', 'primary', 'Copy');
+      copyConfirm.setAttribute('data-el', 'copy-confirm');
+      copyActions.appendChild(copyCancel);
+      copyActions.appendChild(copyConfirm);
+      copyPanel.appendChild(copyActions);
+      headActions.appendChild(copyPanel);
       head.appendChild(title);
       head.appendChild(headActions);
       const list = this.h(root, 'div', 'sb-list');
@@ -1807,6 +1895,7 @@
       this._sbList = list;
       this._sbEmpty = empty;
       this._sbGlobalMenu = globalMenu;
+      this._sbCopyPanel = copyPanel;
       this._sbCopyAll = copyAll;
       this._sbClearAll = clearAll;
       this._sbMenu = menu;
@@ -1816,12 +1905,14 @@
       close.addEventListener('click', () => this.closeSidebar());
       actions.addEventListener('click', (e) => {
         e.stopPropagation();
+        copyPanel.style.display = 'none';
         globalMenu.style.display = globalMenu.style.display === 'none' ? 'block' : 'none';
       });
       aside.addEventListener('mousedown', (e) => {
         if (globalMenu.style.display !== 'none' && e.target !== actions && !globalMenu.contains(e.target)) {
           globalMenu.style.display = 'none';
         }
+        if (copyPanel.style.display !== 'none' && !copyPanel.contains(e.target)) copyPanel.style.display = 'none';
       });
       setName.addEventListener('click', async () => {
         globalMenu.style.display = 'none';
@@ -1856,9 +1947,27 @@
       });
       copyAll.addEventListener('click', async () => {
         globalMenu.style.display = 'none';
-        const text = threadsToMarkdown(this.core.marks || [], resolveAuthorName);
+        for (const [key, checkbox] of Object.entries(copyChecks)) checkbox.checked = markdownOptions[key];
+        updateCopyButton();
+        copyPanel.style.display = 'block';
+      });
+      const updateCopyButton = () => {
+        const modifierEnabled = copyChecks.selectedText.checked && copyChecks.comments.checked;
+        copyChecks.commentedTextOnly.disabled = !modifierEnabled;
+        copyLabels.commentedTextOnly.classList.toggle('disabled', !modifierEnabled);
+        copyConfirm.disabled = !['selectedText', 'comments', 'suggestions']
+          .some((key) => copyChecks[key].checked);
+      };
+      for (const checkbox of Object.values(copyChecks)) checkbox.addEventListener('change', updateCopyButton);
+      copyCancel.addEventListener('click', () => { copyPanel.style.display = 'none'; });
+      copyConfirm.addEventListener('click', async () => {
+        const next = Object.fromEntries(Object.entries(copyChecks).map(([key, checkbox]) => [key, checkbox.checked]));
+        if (!['selectedText', 'comments', 'suggestions'].some((key) => next[key])) return;
+        await saveMarkdownOptions(next);
+        copyPanel.style.display = 'none';
+        const text = threadsToMarkdown(this.core.marks || [], resolveAuthorName, markdownOptions);
         if (!text) { this.toast('Nothing to copy'); return; }
-        this.toast(await this.copyText(text) ? 'Copied all comments as Markdown' : 'Could not copy comments');
+        this.toast(await this.copyText(text) ? 'Copied as Markdown' : 'Could not copy comments');
       });
       exportData.addEventListener('click', async () => {
         globalMenu.style.display = 'none';
@@ -1897,6 +2006,7 @@
         configuredName = '';
         suggestionsEnabled = true;
         uiTheme = 'light';
+        markdownOptions = Object.assign({}, DEFAULT_MARKDOWN_OPTIONS);
         knownAuthors = {};
         installationId = newInstallationId();
         await browser.storage.local.set({ [INSTALLATION_ID_KEY]: installationId });
@@ -1938,6 +2048,7 @@
       if (!this._sbAside) return;
       this._sbAside.style.display = 'none';
       if (this._sbGlobalMenu) this._sbGlobalMenu.style.display = 'none';
+      if (this._sbCopyPanel) this._sbCopyPanel.style.display = 'none';
       this._sbHideMenu();
       this.sbMenuFor = null;
     }
@@ -2721,10 +2832,11 @@
     const identity = await loadAuthorIdentity();
     installationId = identity.id;
     knownAuthors = identity.authors;
-    [configuredName, suggestionsEnabled, uiTheme] = await Promise.all([
+    [configuredName, suggestionsEnabled, uiTheme, markdownOptions] = await Promise.all([
       loadConfiguredName(),
       loadSuggestionsEnabled(),
       loadTheme(),
+      loadMarkdownOptions(),
     ]);
     const doc = document;
     const core = new Core(doc);

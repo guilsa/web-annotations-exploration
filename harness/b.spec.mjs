@@ -463,6 +463,44 @@ await test('B1 pill offers Comment + Suggest edit (no color dots); comment threa
   assert(bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent', 'highlight visibly styled: ' + bg);
 });
 
+await test('B24 Markdown copy options persist and become the next default', async () => {
+  const sidebar = sb(page);
+  await rclick(sidebar.locator('[data-el="global-actions"]'));
+  await rclick(sidebar.locator('[data-el="global-menu"] button', { hasText: 'Copy as Markdown' }));
+  const options = sidebar.locator('[data-el="copy-options"]');
+  await options.waitFor({ state: 'visible' });
+  const selectedText = options.locator('[data-option="selectedText"]');
+  const commentedTextOnly = options.locator('[data-option="commentedTextOnly"]');
+  const comments = options.locator('[data-option="comments"]');
+  const suggestions = options.locator('[data-option="suggestions"]');
+  assert(await selectedText.isChecked(), 'selected text defaults on');
+  assert(await commentedTextOnly.isChecked(), 'commented selections only defaults on');
+  assert(await commentedTextOnly.isEnabled(), 'commented selections modifier is available');
+  assert(await comments.isChecked(), 'comments default on');
+  assert(await suggestions.isChecked(), 'suggestions default on');
+  await suggestions.uncheck();
+  await rclick(options.locator('[data-el="copy-confirm"]'));
+  await sw.evaluate(async () => {
+    const end = Date.now() + 5000;
+    while (Date.now() < end) {
+      const data = await chrome.storage.local.get('tmb.markdownOptions');
+      if (data['tmb.markdownOptions']?.comments === true &&
+          data['tmb.markdownOptions']?.selectedText === true &&
+          data['tmb.markdownOptions']?.commentedTextOnly === true &&
+          data['tmb.markdownOptions']?.suggestions === false) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('Markdown copy options were not persisted');
+  });
+  await rclick(sidebar.locator('[data-el="global-actions"]'));
+  await rclick(sidebar.locator('[data-el="global-menu"] button', { hasText: 'Copy as Markdown' }));
+  assert(await selectedText.isChecked(), 'selected text remembers on');
+  assert(await commentedTextOnly.isChecked(), 'commented selections modifier remembers on');
+  assert(await comments.isChecked(), 'comments remembers on');
+  assert(!(await suggestions.isChecked()), 'suggestions remembers off');
+  await rclick(options.getByRole('button', { name: 'Cancel' }));
+});
+
 await test('B2 comment thread (message + author) survives reload', async () => {
   await page.reload({ waitUntil: 'load' });
   await waitBooted(page);
