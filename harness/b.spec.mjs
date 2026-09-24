@@ -47,14 +47,9 @@ function eq(a, b, msg) {
   if (a !== b) throw new Error((msg || 'eq') + ` — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`);
 }
 
-/* Robust interaction helpers.
- *
- * In this headful host environment, Playwright's pre-action "visible &
- * stable" check intermittently rejects shadow-DOM elements that are
- * perfectly visible (a valid bounding box, native checkVisibility() ===
- * true, and a force click that succeeds). When the normal action times out
- * we fall back to a force action (click) or a direct value set (fill) so the
- * suite stays deterministic. The app behavior under test is identical. */
+/* Robust interaction helpers. When normal actionability checks reject a
+ * visible shadow-DOM element, fall back to a force action or direct value set
+ * so the suite stays deterministic. The app behavior under test is identical. */
 async function rclick(loc, opts) {
   try {
     await loc.click(opts);
@@ -78,7 +73,10 @@ async function rfill(loc, value) {
 const server = await startServer(PORT);
 const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tm-harness-b-'));
 const ctx = await chromium.launchPersistentContext(userDataDir, {
-  headless: process.env.HEADLESS === '1',
+  // The `chromium` channel opts into new headless mode, which supports
+  // side-loaded extensions. Set HEADED=1 when visually debugging the suite.
+  channel: 'chromium',
+  headless: process.env.HEADED !== '1',
   viewport: { width: 1280, height: 900 },
   args: [
     `--disable-extensions-except=${EXT_DIR}`,
@@ -107,10 +105,8 @@ const waitBooted = (pg, t = 10000) => pg.waitForFunction(
   () => document.documentElement.hasAttribute('data-tmb-ready'),
   { timeout: t },
 );
-/* Bring the page's window to the front first: with a headful browser on the
- * host machine, a background window can make Playwright's actionability
- * checks flake ("element is not visible") even though the element is
- * perfectly visible. */
+/* In headed debug runs, a background window can make actionability checks
+ * flake even though an element is visible. This is harmless in headless mode. */
 const selectWhole = async (pg, sel) => {
   await pg.bringToFront();
   return pg.evaluate((s) => {

@@ -72,8 +72,9 @@ sync in real time, with each side's author identity attached.
 
 ```sh
 node tests/run-tests.js b     # 22 unit tests (threads, identities, merge, codes, matcher, DOM)
-cd harness && node b.spec.mjs # 19 Playwright e2e tests — includes a REAL
+cd harness && node b.spec.mjs # 19 headless Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
+HEADED=1 node b.spec.mjs      # optional visible browser for debugging
 ```
 
 The e2e suite loads the real add-on into Chromium and verifies isolated real
@@ -82,10 +83,11 @@ thread + suggestion flows, sidebar card behavior (expand/collapse, ⋮ menu,
 close control), and a genuine invite/join handshake with live thread / reply
 / suggestion / delete sync and session teardown across the two tabs.
 
-> Note: the e2e harness runs **headful** (headless Chrome does not register
-> this MV3 service worker in the pinned build). It brings its window to the
-> front before interactions; if the host keeps stealing focus, the helpers
-> fall back to force actions automatically.
+The harness uses Playwright's `chromium` channel (new headless mode), which
+supports side-loaded MV3 extensions. The older default headless shell does not
+register the extension service worker. Headed debug runs bring the active page
+to the front; interaction helpers retain deterministic fallbacks for occasional
+shadow-DOM actionability failures.
 
 ### Preserve storage across temporary Firefox reinstalls
 
