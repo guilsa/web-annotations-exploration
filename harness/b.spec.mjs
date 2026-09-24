@@ -179,6 +179,21 @@ async function waitEditorReady(loc, timeout = 15000) {
   }
   throw new Error('timed out waiting for isolated editor readiness');
 }
+async function waitCardText(pg, needle, timeout = 5000) {
+  await pg.waitForFunction((text) => {
+    const host = document.querySelector('#tmb-sidebar');
+    const cards = host && host.shadowRoot && host.shadowRoot.querySelectorAll('[data-el="card"]');
+    return Array.from(cards || []).some((card) => card.textContent.includes(text));
+  }, needle, { timeout });
+}
+async function waitPairLog(logs, predicate, from = 0, timeout = 5000) {
+  const end = Date.now() + timeout;
+  while (Date.now() < end) {
+    if (logs.slice(from).some(predicate)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('timed out waiting for Pairshare log');
+}
 
 /* Expand a card if it is collapsed (synced threads arrive collapsed). */
 async function ensureOpen(pg, cardLoc) {
@@ -208,8 +223,8 @@ async function newCommentThread(pg, sel, message) {
   if (message) {
     await rfill(sbComposer(pg, sb(pg).locator('[data-el="card"]').last()), message);
     await rclick(sb(pg).locator('[data-el="card"]').last().locator('[data-el="post"]'));
+    await waitCardText(pg, message);
   }
-  await pg.waitForTimeout(150);
 }
 
 /* Create a suggestion on `sel`, set the proposed replacement, submit. */
@@ -224,7 +239,7 @@ async function newSuggestion(pg, sel, proposed) {
   await ta.waitFor({ state: 'visible', timeout: 5000 });
   if (proposed !== null) await rfill(ta, proposed);
   await rclick(card.locator('[data-el="submit"]'));
-  await pg.waitForTimeout(150);
+  if (proposed !== null) await waitCardText(pg, proposed);
 }
 
 const panel = (pg) => pg.locator('#tmb-panel');
@@ -247,7 +262,11 @@ async function setPanel(pg, open) {
   await pg.bringToFront();
   if (await panelOpen(pg) ? open === false : open) {
     await sendBg({ type: 'tmb:toggle-panel' });
-    await pg.waitForTimeout(100);
+    await pg.waitForFunction((want) => {
+      const host = document.querySelector('#tmb-panel');
+      const overlay = host && host.shadowRoot && host.shadowRoot.querySelector('.overlay');
+      return (overlay ? overlay.style.display === 'block' : false) === want;
+    }, open, { timeout: 5000 });
   }
 }
 
@@ -368,7 +387,13 @@ await test('B21 proposed replacement and panel code editors are isolated; Escape
     'sidebar, proposal and panel editor events all stayed in child frames');
 
   await hotkeyPage.keyboard.press('Escape');
-  await hotkeyPage.waitForTimeout(100);
+  await hotkeyPage.waitForFunction(() => {
+    const panelHost = document.querySelector('#tmb-panel');
+    const overlay = panelHost && panelHost.shadowRoot && panelHost.shadowRoot.querySelector('.overlay');
+    const sidebarHost = document.querySelector('#tmb-sidebar');
+    const aside = sidebarHost && sidebarHost.shadowRoot && sidebarHost.shadowRoot.querySelector('[data-el="aside"]');
+    return overlay && overlay.style.display !== 'block' && aside && aside.style.display !== 'flex';
+  }, { timeout: 5000 });
   assert(!(await panelOpen(hotkeyPage)), 'Escape closes the panel');
   assert(!(await sidebarVisible(hotkeyPage)), 'Escape preserves Pairshare sidebar dismissal');
 });
@@ -464,14 +489,16 @@ await test('B8 multiple threads in the SAME paragraph all render and survive', a
   await rclick(page.locator('#tmb-pill [data-el="comment"]'));
   await rfill(sbComposer(page, sb(page).locator('[data-el="card"]').last()), 'nested one');
   await rclick(sb(page).locator('[data-el="card"]').last().locator('[data-el="post"]'));
-  await page.waitForTimeout(600); // past the storage.onChanged debounce
+  // Intentional wall-clock wait: this regression must cross the content
+  // script's 300 ms storage.onChanged debounce before creating another mark.
+  await page.waitForTimeout(600);
 
   await page.bringToFront();
   await selectCharSlice(page, '#p1', 40, 60);  // "dog, and then it goe"
   await rclick(page.locator('#tmb-pill [data-el="comment"]'));
   await rfill(sbComposer(page, sb(page).locator('[data-el="card"]').last()), 'nested two');
   await rclick(sb(page).locator('[data-el="card"]').last().locator('[data-el="post"]'));
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(600); // cross the same debounce a second time
 
   // Both new threads present right now — no reload, no retry.
   eq(await sbCardCount(page), before + 2, 'both threads in same paragraph rendered immediately');
@@ -526,7 +553,9 @@ await test('B10 first post keeps the message (storage.onChanged reference race)'
   const ta = sbComposer(page, card, 'message');
   await rclick(ta);
   await page.keyboard.type('first post kept', { delay: 40 });
-  await page.waitForTimeout(500); // run the storage.onChanged debounce
+  // Intentional wall-clock wait: the bug only occurred after the 300 ms
+  // storage.onChanged debounce replaced the in-memory mark reference.
+  await page.waitForTimeout(500);
   await rclick(card.locator('[data-el="post"]'));
   await page.waitForFunction(() => {
     const el = document.querySelector('#tmb-sidebar');
@@ -649,6 +678,7 @@ await test('B3 pair handshake: invite (page1) + join (page2) -> both connected',
 });
 
 await test('B13 live sync: comment thread + first message reach page2', async () => {
+  const logStart = pairLogs.p2.length;
   await page.bringToFront();
   await newCommentThread(page, '#p2', 'synced over webrtc');
   // Both harness pages share one extension profile/installation ID, so each
@@ -667,8 +697,9 @@ await test('B13 live sync: comment thread + first message reach page2', async ()
   // assert the WebRTC receive path actually ran (not just the shared-profile
   // storage echo): onMessage must merge the incoming thread.
   await page.bringToFront();
-  await page.waitForTimeout(400);
-  const merged = pairLogs.p2.slice(-20).some((l) =>
+  await waitPairLog(pairLogs.p2, (line) =>
+    /onMessage merge: added=[1-9]/.test(line) || /onMessage merge:.*added=0 updated=[1-9]/.test(line), logStart);
+  const merged = pairLogs.p2.slice(logStart).some((l) =>
     /onMessage merge: added=[1-9]/.test(l) || /onMessage merge:.*added=0 updated=[1-9]/.test(l));
   assert(merged, 'WebRTC receive path did not merge the thread on page2; logs: ' + JSON.stringify(pairLogs.p2.slice(-6)));
 });

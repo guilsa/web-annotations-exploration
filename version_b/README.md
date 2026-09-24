@@ -95,6 +95,10 @@ register the extension service worker. Headed debug runs bring the active page
 to the front; interaction helpers retain deterministic fallbacks for occasional
 shadow-DOM actionability failures.
 
+The suite waits on UI, storage, and WebRTC outcomes instead of sleeping where
+possible. Its few fixed waits are intentional regression inputs: they cross the
+content script's 300 ms `storage.onChanged` debounce before the next action.
+
 ### Preserve storage across temporary Firefox reinstalls
 
 Firefox normally clears extension-local storage on uninstall. For development,
