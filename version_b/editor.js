@@ -26,6 +26,7 @@
     if (typeof msg.readOnly === 'boolean') textarea.readOnly = msg.readOnly;
     if (Number.isSafeInteger(msg.maxLength) && msg.maxLength > 0) textarea.maxLength = msg.maxLength;
     textarea.classList.toggle('code', msg.kind === 'code');
+    document.documentElement.setAttribute('data-theme', msg.theme === 'dark' ? 'dark' : 'light');
     const start = Number.isSafeInteger(msg.selectionStart) ? msg.selectionStart : textarea.value.length;
     const end = Number.isSafeInteger(msg.selectionEnd) ? msg.selectionEnd : start;
     try { textarea.setSelectionRange(start, end); } catch (_) { /* read-only/unsupported */ }

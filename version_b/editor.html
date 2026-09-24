@@ -16,6 +16,11 @@
   }
   textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 1px #3b82f6; }
   textarea.code { font: 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-all; }
+  html[data-theme="dark"] { color-scheme: dark; }
+  html[data-theme="dark"] textarea {
+    background: #111827; color: #e5e7eb; border-color: #475569;
+  }
+  html[data-theme="dark"] textarea::placeholder { color: #64748b; }
   .focus-sentinel {
     position: fixed; width: 1px; height: 1px; padding: 0; border: 0;
     opacity: 0; pointer-events: none; clip-path: inset(50%);

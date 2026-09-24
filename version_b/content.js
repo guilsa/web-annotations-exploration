@@ -319,10 +319,12 @@
   const COLOR_KEY = 'tmb.color';
   const NAME_KEY = 'tmb.displayName';
   const SUGGESTIONS_KEY = 'tmb.suggestionsEnabled';
+  const THEME_KEY = 'tmb.theme';
   const INSTALLATION_ID_KEY = 'tmb.installationId';
   const AUTHORS_KEY = 'tmb.authors';
   let configuredName = '';
   let suggestionsEnabled = true;
+  let uiTheme = 'light';
   let installationId = '';
   let knownAuthors = {};
 
@@ -399,6 +401,28 @@
     await browser.storage.local.set({ [SUGGESTIONS_KEY]: suggestionsEnabled });
     try {
       if (browser.storage.sync) await browser.storage.sync.set({ [SUGGESTIONS_KEY]: suggestionsEnabled });
+    } catch (_) { /* local persistence still succeeded */ }
+  }
+
+  async function loadTheme() {
+    try {
+      const local = await browser.storage.local.get(THEME_KEY);
+      if (local[THEME_KEY] === 'dark' || local[THEME_KEY] === 'light') return local[THEME_KEY];
+    } catch (_) { /* fall through to sync */ }
+    try {
+      if (browser.storage.sync) {
+        const synced = await browser.storage.sync.get(THEME_KEY);
+        if (synced[THEME_KEY] === 'dark' || synced[THEME_KEY] === 'light') return synced[THEME_KEY];
+      }
+    } catch (_) { /* sync may be unavailable or disabled */ }
+    return 'light';
+  }
+
+  async function saveTheme(theme) {
+    uiTheme = theme === 'dark' ? 'dark' : 'light';
+    await browser.storage.local.set({ [THEME_KEY]: uiTheme });
+    try {
+      if (browser.storage.sync) await browser.storage.sync.set({ [THEME_KEY]: uiTheme });
     } catch (_) { /* local persistence still succeeded */ }
   }
   const HL_CLASS = 'tmb-hl';
@@ -1034,6 +1058,52 @@
     .sb-menu button:hover { background: #f1f5f9; }
     .sb-menu button.danger { color: #b91c1c; }
     .sb-menu button.danger:hover { background: #fee2e2; }
+
+    /* ---- dark theme ---- */
+    :host([data-tmb-theme="dark"]) .card,
+    :host([data-tmb-theme="dark"]) .sheet,
+    :host([data-tmb-theme="dark"]) .sb-head,
+    :host([data-tmb-theme="dark"]) .sb-card,
+    :host([data-tmb-theme="dark"]) .sb-global-menu,
+    :host([data-tmb-theme="dark"]) .sb-menu {
+      background: #111827; color: #e5e7eb; border-color: #334155;
+    }
+    :host([data-tmb-theme="dark"]) .sidebar,
+    :host([data-tmb-theme="dark"]) .sb-list { background: #0f172a; color: #e5e7eb; }
+    :host([data-tmb-theme="dark"]) .sb-head,
+    :host([data-tmb-theme="dark"]) .sb-card-body { border-color: #334155; }
+    :host([data-tmb-theme="dark"]) button:not(.primary),
+    :host([data-tmb-theme="dark"]) .sb-global-menu button,
+    :host([data-tmb-theme="dark"]) .sb-menu button {
+      background: transparent; border-color: #475569; color: #e5e7eb;
+    }
+    :host([data-tmb-theme="dark"]) button:not(.primary):hover,
+    :host([data-tmb-theme="dark"]) .sb-global-menu button:hover,
+    :host([data-tmb-theme="dark"]) .sb-menu button:hover { background: #1e293b; }
+    :host([data-tmb-theme="dark"]) .sb-close,
+    :host([data-tmb-theme="dark"]) .sb-more { color: #cbd5e1; }
+    :host([data-tmb-theme="dark"]) .card .q,
+    :host([data-tmb-theme="dark"]) .card .meta,
+    :host([data-tmb-theme="dark"]) .sb-card-head .ctx,
+    :host([data-tmb-theme="dark"]) .sb-card-head .when,
+    :host([data-tmb-theme="dark"]) .sb-empty,
+    :host([data-tmb-theme="dark"]) .sb-msg .who,
+    :host([data-tmb-theme="dark"]) .prop-label,
+    :host([data-tmb-theme="dark"]) .help,
+    :host([data-tmb-theme="dark"]) .pane label { color: #94a3b8; }
+    :host([data-tmb-theme="dark"]) .sb-msg .who b { color: #cbd5e1; }
+    :host([data-tmb-theme="dark"]) .sb-msg { background: #1e293b; border-color: #334155; }
+    :host([data-tmb-theme="dark"]) .sb-card .quote { background: #3b2f0b; color: #fde68a; border-left-color: #a16207; }
+    :host([data-tmb-theme="dark"]) .sb-card.suggestion .quote { background: #431f0b; color: #fed7aa; border-left-color: #c2410c; }
+    :host([data-tmb-theme="dark"]) .prop { background: #052e1b; color: #bbf7d0; border-left-color: #15803d; }
+    :host([data-tmb-theme="dark"]) .status { background: #172554; color: #bfdbfe; }
+    :host([data-tmb-theme="dark"]) .status.connected { background: #052e1b; color: #a7f3d0; }
+    :host([data-tmb-theme="dark"]) .status.error { background: #450a0a; color: #fecaca; }
+    :host([data-tmb-theme="dark"]) .foreign { background: #3b2f0b; border-color: #854d0e; color: #fde68a; }
+    :host([data-tmb-theme="dark"]) .sb-global-separator { background: #334155; }
+    :host([data-tmb-theme="dark"]) iframe.editor-frame { background: #111827; color-scheme: dark; }
+    :host([data-tmb-theme="dark"]) .sb-global-menu button.danger,
+    :host([data-tmb-theme="dark"]) .sb-menu button.danger { color: #fca5a5; }
   `;
 
   class UI {
@@ -1069,6 +1139,7 @@
       const div = doc.createElement('div');
       div.id = 'tmb-' + name;
       div.setAttribute(SKIP, '');
+      div.setAttribute('data-tmb-theme', uiTheme);
       div.style.cssText = 'all:initial;position:fixed;z-index:2147483647;';
       const root = div.attachShadow({ mode: 'open' });
       const style = doc.createElement('style');
@@ -1099,7 +1170,7 @@
       const id = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
       const state = {
         value: '', placeholder: '', readOnly: false, maxLength: 5000,
-        kind: kind || 'text', version: 0, seq: -1,
+        kind: kind || 'text', theme: uiTheme, version: 0, seq: -1,
         selectionStart: 0, selectionEnd: 0, ready: false, focusPending: false,
       };
       const reads = new Map();
@@ -1116,6 +1187,7 @@
         readOnly: state.readOnly,
         maxLength: state.maxLength,
         kind: state.kind,
+        theme: state.theme,
         selectionStart: state.selectionStart,
         selectionEnd: state.selectionEnd,
       });
@@ -1153,6 +1225,10 @@
               update();
             }
           },
+        },
+        tmbTheme: {
+          get: () => state.theme,
+          set: (value) => { state.theme = value === 'dark' ? 'dark' : 'light'; update(); },
         },
       });
       frame.tmbFocus = () => {
@@ -1240,6 +1316,16 @@
       frame.setAttribute('title', kind === 'code' ? 'Pairshare code editor' : 'Pairshare text editor');
       frame.src = browser.runtime.getURL('editor.html') + '#' + id;
       return frame;
+    }
+
+    applyTheme() {
+      for (const host of Object.values(this.hosts)) host.setAttribute('data-tmb-theme', uiTheme);
+      this.doc().documentElement.setAttribute('data-tmb-ui-theme', uiTheme);
+      for (const host of Object.values(this.hosts)) {
+        const root = host.shadowRoot;
+        if (!root || !root.querySelectorAll) continue;
+        for (const frame of root.querySelectorAll('[data-tmb-editor]')) frame.tmbTheme = uiTheme;
+      }
     }
 
     disposeEditors(container) {
@@ -1519,6 +1605,8 @@
       const setName = this.h(root, 'button', null, 'Set display name…');
       const toggleSuggestions = this.h(root, 'button', null,
         suggestionsEnabled ? 'Disable suggestions' : 'Enable suggestions');
+      const toggleTheme = this.h(root, 'button', null,
+        uiTheme === 'dark' ? 'Use light mode' : 'Use dark mode');
       const copyAll = this.h(root, 'button', null, 'Copy all as Markdown');
       const clearAll = this.h(root, 'button', null, 'Clear all');
       const separator = this.h(root, 'div', 'sb-global-separator');
@@ -1527,6 +1615,7 @@
       globalMenu.appendChild(copyAll);
       globalMenu.appendChild(setName);
       globalMenu.appendChild(toggleSuggestions);
+      globalMenu.appendChild(toggleTheme);
       globalMenu.appendChild(clearAll);
       globalMenu.appendChild(separator);
       globalMenu.appendChild(reset);
@@ -1609,6 +1698,13 @@
         this.hidePill();
         this.toast(suggestionsEnabled ? 'Suggestions enabled' : 'Suggestions disabled');
       });
+      toggleTheme.addEventListener('click', async () => {
+        globalMenu.style.display = 'none';
+        await saveTheme(uiTheme === 'dark' ? 'light' : 'dark');
+        toggleTheme.textContent = uiTheme === 'dark' ? 'Use light mode' : 'Use dark mode';
+        this.applyTheme();
+        this.toast(uiTheme === 'dark' ? 'Dark mode enabled' : 'Light mode enabled');
+      });
       copyAll.addEventListener('click', async () => {
         globalMenu.style.display = 'none';
         const text = threadsToMarkdown(this.core.marks || [], resolveAuthorName);
@@ -1642,6 +1738,7 @@
         } catch (_) { /* local reset still succeeded */ }
         configuredName = '';
         suggestionsEnabled = true;
+        uiTheme = 'light';
         knownAuthors = {};
         installationId = newInstallationId();
         await browser.storage.local.set({ [INSTALLATION_ID_KEY]: installationId });
@@ -2438,6 +2535,17 @@
         '!important;border-radius:2px;box-shadow:inset 0 -2px 0 ' + c.edge +
         ';cursor:pointer;}';
     }
+    rules +=
+      'html[data-tmb-ui-theme="light"] .tmb-hl{color:#111827!important;}' +
+      'html[data-tmb-ui-theme="dark"] .tmb-hl{color:#f8fafc!important;}' +
+      'html[data-tmb-ui-theme="dark"] .tmb-hl[data-tmb-color="yellow"]{' +
+      'background-color:#7c5a08!important;box-shadow:inset 0 -2px 0 #d97706;}' +
+      'html[data-tmb-ui-theme="dark"] .tmb-hl[data-tmb-color="blue"]{' +
+      'background-color:#1e3a8a!important;box-shadow:inset 0 -2px 0 #3b82f6;}' +
+      'html[data-tmb-ui-theme="dark"] .tmb-hl[data-tmb-color="green"]{' +
+      'background-color:#166534!important;box-shadow:inset 0 -2px 0 #22c55e;}' +
+      'html[data-tmb-ui-theme="dark"] .tmb-hl[data-tmb-color="pink"]{' +
+      'background-color:#9f1239!important;box-shadow:inset 0 -2px 0 #f43f5e;}';
     const st = doc.createElement('style');
     st.id = 'tmb-page-css';
     st.setAttribute(SKIP, '');
@@ -2452,14 +2560,16 @@
     const identity = await loadAuthorIdentity();
     installationId = identity.id;
     knownAuthors = identity.authors;
-    [configuredName, suggestionsEnabled] = await Promise.all([
+    [configuredName, suggestionsEnabled, uiTheme] = await Promise.all([
       loadConfiguredName(),
       loadSuggestionsEnabled(),
+      loadTheme(),
     ]);
     const doc = document;
     const core = new Core(doc);
     const pair = new Pair(core);
     const ui = new UI(core, pair);
+    ui.applyTheme();
 
     core.load().then(() => {
       core.render();
