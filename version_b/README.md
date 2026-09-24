@@ -29,17 +29,18 @@ delete syncs in real time and is saved locally on both sides.
    proposed replacement. **Submit suggestion** saves it; **Cancel** discards
    a suggestion that has no content yet.
 4. Every thread/suggestion is a **card** listing the document location
-   (context quote), **author** (two hard-coded gender-neutral names:
-   **Riley** on the invite side, **Jordan** on the join side — stored on the
-   thread so both peers agree), **timestamp**, and body. A **⋮ (three-dot)
+   (context quote), **author** (defaulting to **Alice** on the invite side and
+   **Bob** on the join side), **timestamp**, and body. New records carry a
+   stable installation author ID so display names can change without changing
+   authorship. A **⋮ (three-dot)
    button** opens an **Edit / Delete** menu. Cards **expand / collapse** via
    their header; a **✕** control closes the whole sidebar.
 5. Marks persist per-URL in `browser.storage.local` (key `tmb.pages`) and
    restore on revisit via fuzzy text matching (quote + context + saved
    offset, whitespace-insensitive tiers). Legacy note-marks are upgraded to
    single-message comment threads on load.
-6. Hover a highlight → preview card; click **Open thread** (or click the
-   highlight) to open it in the sidebar.
+6. Hover a highlight for a preview; click the highlight to open its thread in
+   the sidebar.
 7. `Alt+M` — comment on the current selection. `Alt+L` — open/close the
    sidebar. `Alt+P` (or the toolbar button) — open the Pair panel.
 8. Writable comment, suggestion, invite, and join fields run in small
@@ -64,13 +65,13 @@ Browser 1:
 
 Both sides show **● Connected**. Now comments flow both ways live: new
 threads, replies, submitted / re-proposed suggestions and deletions all
-sync in real time, with each side's author name (Riley / Jordan) attached.
+sync in real time, with each side's author identity attached.
 *End session* closes the channel (marks remain saved locally).
 
 ## Testing
 
 ```sh
-node tests/run-tests.js b     # 20 unit tests (threads, merge, codes, matcher, DOM)
+node tests/run-tests.js b     # 22 unit tests (threads, identities, merge, codes, matcher, DOM)
 cd harness && node b.spec.mjs # 19 Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
 ```
@@ -86,6 +87,21 @@ close control), and a genuine invite/join handshake with live thread / reply
 > front before interactions; if the host keeps stealing focus, the helpers
 > fall back to force actions automatically.
 
+### Preserve storage across temporary Firefox reinstalls
+
+Firefox normally clears extension-local storage on uninstall. For development,
+open `about:config` and set both of these preferences to `true`:
+
+- `extensions.webextensions.keepUuidOnUninstall`
+- `extensions.webextensions.keepStorageOnUninstall`
+
+Configure the extension, remove it, then reinstall the same `version_b`
+manifest. Its fixed add-on ID (`textmarker-b@revamped.local`) and local storage
+will be retained. These preferences affect extension development across the
+Firefox profile; restore them to `false` for normal uninstall cleanup. The
+sidebar's **Reset extension…** action explicitly clears Pairshare's data even
+when these preferences are enabled.
+
 ## Files
 
 | File | Role |
@@ -96,6 +112,13 @@ close control), and a genuine invite/join handshake with live thread / reply
 | `content.js` | class-based core: `Core` (state/index/threads), `Pair` (WebRTC), `UI` (pill, comments sidebar with thread cards, hover card, pair overlay, editor adapters) + pure thread helpers |
 | `editor.html`, `editor.js` | extension-origin textarea context; preserves native editing while keeping keyboard events outside the host document |
 | `icons/` | blue palette |
+
+## Compatibility notes
+
+- New threads and replies carry a stable per-installation author ID, so changing
+  a display name updates their rendered and exported attribution without
+  rewriting history. Legacy records without an author ID retain their stored
+  names rather than risk attributing a peer's message to the wrong person.
 
 ## Known limits (by design)
 

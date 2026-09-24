@@ -139,7 +139,7 @@
    * thread last-write-wins by ts).
    */
 
-  const AUTHORS = { me: 'Riley', peer: 'Jordan' };
+  const AUTHORS = { me: 'Alice', peer: 'Bob' };
   const LOCAL_ROLE = 'me';
 
   function displayName(role) {
@@ -148,9 +148,9 @@
 
   /**
    * Local author identity. The two hard-coded names are assigned by pairing
-   * role: the side that generated the invite code is Riley, the side that
-   * joined with a join code is Jordan. Unpaired (or freshly paired) browsers
-   * are Riley. The chosen name is stored on each thread/message it creates,
+   * role: the side that generated the invite code is Alice, the side that
+   * joined with a join code is Bob. Unpaired (or freshly paired) browsers
+   * are Alice. The chosen name is stored on each thread/message it creates,
    * so both peers display the same author identity.
    */
   function localName(pairRole) {
@@ -159,9 +159,11 @@
 
   const mid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-  function appendMessage(thread, body, name, ts) {
+  function appendMessage(thread, body, name, ts, authorId) {
     const messages = Array.isArray(thread.messages) ? thread.messages.slice() : [];
-    messages.push({ id: mid('m'), name: name || AUTHORS.me, body: body == null ? '' : String(body), ts: ts || Date.now() });
+    const message = { id: mid('m'), name: name || AUTHORS.me, body: body == null ? '' : String(body), ts: ts || Date.now() };
+    if (authorId) message.authorId = authorId;
+    messages.push(message);
     return Object.assign({}, thread, { messages, ts: ts || Date.now() });
   }
 
@@ -213,6 +215,32 @@
       .map((m, i) => [m, i])
       .sort((a, b) => ((a[0].offset || 0) - (b[0].offset || 0)) || (a[1] - b[1]))
       .map((x) => x[0]);
+  }
+
+  function markdownQuote(text) {
+    return String(text == null ? '' : text)
+      .split(/\r?\n/)
+      .map((line) => '> ' + line)
+      .join('\n');
+  }
+
+  /** Serialize threads in document order for pasting into a Markdown-aware chat. */
+  function threadsToMarkdown(marks, resolveName) {
+    return sortedThreads(normalizeMarks(marks || [])).map((thread) => {
+      const parts = [markdownQuote(thread.quote)];
+      if (thread.kind === 'suggestion' && String(thread.proposed || '').trim()) {
+        parts.push('**Suggested replacement:**\n\n' + markdownQuote(thread.proposed));
+      }
+      for (const message of thread.messages || []) {
+        const body = String(message.body || '').trim();
+        if (!body) continue;
+        const fallback = message.name || displayName(thread.author);
+        const resolved = resolveName ? resolveName(message.authorId, fallback) : fallback;
+        const name = String(resolved).replace(/\*/g, '\\*');
+        parts.push('**' + name + ':** ' + body);
+      }
+      return parts.join('\n\n');
+    }).join('\n\n---\n\n');
   }
 
   const threadsEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -275,6 +303,7 @@
       normalizeMark,
       normalizeMarks,
       sortedThreads,
+      threadsToMarkdown,
     };
   }
 
@@ -288,6 +317,90 @@
   const ID_ATTR = 'data-tmb-id';
   const PAGES_KEY = 'tmb.pages';
   const COLOR_KEY = 'tmb.color';
+  const NAME_KEY = 'tmb.displayName';
+  const SUGGESTIONS_KEY = 'tmb.suggestionsEnabled';
+  const INSTALLATION_ID_KEY = 'tmb.installationId';
+  const AUTHORS_KEY = 'tmb.authors';
+  let configuredName = '';
+  let suggestionsEnabled = true;
+  let installationId = '';
+  let knownAuthors = {};
+
+  function newInstallationId() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function loadAuthorIdentity() {
+    const data = await browser.storage.local.get([INSTALLATION_ID_KEY, AUTHORS_KEY]);
+    const id = typeof data[INSTALLATION_ID_KEY] === 'string' && data[INSTALLATION_ID_KEY]
+      ? data[INSTALLATION_ID_KEY] : newInstallationId();
+    const authors = data[AUTHORS_KEY] && typeof data[AUTHORS_KEY] === 'object' ? data[AUTHORS_KEY] : {};
+    if (id !== data[INSTALLATION_ID_KEY]) await browser.storage.local.set({ [INSTALLATION_ID_KEY]: id });
+    return { id, authors };
+  }
+
+  function resolveAuthorName(authorId, fallback) {
+    if (!authorId) return fallback || AUTHORS.me;
+    if (authorId === installationId) return configuredName || fallback || knownAuthors[authorId] || AUTHORS.me;
+    return knownAuthors[authorId] || fallback || AUTHORS.peer;
+  }
+
+  async function rememberAuthor(authorId, name) {
+    const clean = String(name || '').trim().slice(0, 80);
+    if (!authorId || !clean || knownAuthors[authorId] === clean) return false;
+    knownAuthors = Object.assign({}, knownAuthors, { [authorId]: clean });
+    await browser.storage.local.set({ [AUTHORS_KEY]: knownAuthors });
+    return true;
+  }
+
+  async function loadConfiguredName() {
+    try {
+      const local = await browser.storage.local.get(NAME_KEY);
+      if (Object.prototype.hasOwnProperty.call(local, NAME_KEY)) {
+        return typeof local[NAME_KEY] === 'string' ? local[NAME_KEY].trim() : '';
+      }
+    } catch (_) { /* fall through to sync */ }
+    try {
+      if (browser.storage.sync) {
+        const synced = await browser.storage.sync.get(NAME_KEY);
+        if (typeof synced[NAME_KEY] === 'string') return synced[NAME_KEY].trim();
+      }
+    } catch (_) { /* sync may be unavailable or disabled */ }
+    return '';
+  }
+
+  async function saveConfiguredName(name) {
+    configuredName = String(name || '').trim().slice(0, 80);
+    await browser.storage.local.set({ [NAME_KEY]: configuredName });
+    try {
+      if (browser.storage.sync) await browser.storage.sync.set({ [NAME_KEY]: configuredName });
+    } catch (_) { /* local persistence still succeeded */ }
+  }
+
+  async function loadSuggestionsEnabled() {
+    try {
+      const local = await browser.storage.local.get(SUGGESTIONS_KEY);
+      if (typeof local[SUGGESTIONS_KEY] === 'boolean') return local[SUGGESTIONS_KEY];
+    } catch (_) { /* fall through to sync */ }
+    try {
+      if (browser.storage.sync) {
+        const synced = await browser.storage.sync.get(SUGGESTIONS_KEY);
+        if (typeof synced[SUGGESTIONS_KEY] === 'boolean') return synced[SUGGESTIONS_KEY];
+      }
+    } catch (_) { /* sync may be unavailable or disabled */ }
+    return true;
+  }
+
+  async function saveSuggestionsEnabled(enabled) {
+    suggestionsEnabled = !!enabled;
+    await browser.storage.local.set({ [SUGGESTIONS_KEY]: suggestionsEnabled });
+    try {
+      if (browser.storage.sync) await browser.storage.sync.set({ [SUGGESTIONS_KEY]: suggestionsEnabled });
+    } catch (_) { /* local persistence still succeeded */ }
+  }
   const HL_CLASS = 'tmb-hl';
 
   const COLORS = {
@@ -672,7 +785,10 @@
 
     sendState() {
       if (this.dc && this.dc.readyState === 'open') {
-        const payload = { t: 'state', url: this.core.pageKey(), title: this.docTitle(), ts: Date.now(), marks: this.core.marks };
+        const payload = {
+          t: 'state', url: this.core.pageKey(), title: this.docTitle(), ts: Date.now(), marks: this.core.marks,
+          author: { id: installationId, name: this.ui ? this.ui.localName() : AUTHORS.me },
+        };
         this.dc.send(JSON.stringify(payload));
         console.log('[TMB-PAIR] sendState: sent marks=' + payload.marks.length + ' url=' + payload.url + ' (role=' + this.role + ')');
       } else {
@@ -694,6 +810,11 @@
         return;
       }
       if (msg.t !== 'state' || !Array.isArray(msg.marks)) return;
+      const authorChanged = msg.author && msg.author.id
+        ? (knownAuthors[msg.author.id] !== String(msg.author.name || '').trim()) : false;
+      if (authorChanged) rememberAuthor(msg.author.id, msg.author.name).then(() => {
+        if (this.ui) this.ui.renderSidebar(true);
+      });
       if (msg.url !== this.core.pageKey()) {
         this.status('connected', 'Peer is on a different page — see Import.');
         if (this.ui && this.ui.panel) this.ui.panel.showForeign(msg.url, msg.title, msg.marks);
@@ -767,6 +888,7 @@
     .card .note { margin: 0 0 6px; white-space: pre-wrap; }
     .card .meta { color: #6b7280; font-size: 11px; }
     .card .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+    .card .thread-actions { display: none; }
     .card button, .panel button, .overlay button {
       border: 1px solid #d1d5db; background: #f9fafb; color: #111827;
       border-radius: 6px; padding: 5px 11px; cursor: pointer; font-size: 12px;
@@ -807,6 +929,8 @@
       word-break: break-all;
     }
     .pane .actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .pane > button + iframe.editor-frame,
+    .pane .actions + iframe.editor-frame { margin-top: 8px; }
     .foreign {
       display: none; margin-top: 12px; padding: 10px; border-radius: 8px;
       background: #fffbeb; border: 1px solid #fde68a; font-size: 12px;
@@ -822,13 +946,24 @@
       border-left: 1px solid #e2e8f0; box-shadow: -8px 0 24px rgba(0,0,0,.18);
       font-size: 13px; z-index: 2147483647;
     }
-    .sb-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    .sb-head { position: relative; display: flex; align-items: center; gap: 8px; padding: 10px 12px;
       border-bottom: 1px solid #e2e8f0; background: #fff; }
     .sb-head h3 { margin: 0; font-size: 14px; flex: 1; }
-    .sb-count { color: #6b7280; font-size: 12px; }
     .sb-close { border: 0; background: transparent; font-size: 15px; cursor: pointer;
       padding: 4px 8px; border-radius: 6px; color: #475569; }
     .sb-close:hover { background: #e2e8f0; }
+    .sb-head-actions { position: relative; display: flex; align-items: center; gap: 2px; }
+    .sb-global-menu { position: absolute; top: calc(100% + 4px); right: 0; min-width: 190px;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; z-index: 20; }
+    .sb-global-menu button { display: block; width: 100%; text-align: left; border: 0;
+      background: transparent; color: #111827; padding: 7px 10px; border-radius: 6px;
+      cursor: pointer; font-size: 12.5px; }
+    .sb-global-menu button:hover { background: #f1f5f9; }
+    .sb-global-menu button.danger { color: #b91c1c; }
+    .sb-global-menu button.danger:hover { background: #fee2e2; }
+    .sb-global-menu button:disabled { color: #94a3b8; cursor: default; background: transparent; }
+    .sb-global-separator { height: 1px; margin: 4px 6px; background: #e2e8f0; }
     .sb-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
     .sb-empty { color: #6b7280; font-size: 12px; padding: 24px 16px; text-align: center; margin: auto; }
     .sb-card { position: relative; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
@@ -888,6 +1023,9 @@
     .composer iframe.editor-frame { height: 70px; }
     iframe.editor-frame.prop-input { height: 78px; min-height: 78px; resize: none; }
     .pane iframe.editor-frame { height: 100px; margin: 0; }
+    .pane iframe.editor-frame.pair-name { height: 32px; min-height: 32px; }
+    .pane iframe.pair-name + button { margin-top: 8px; }
+    .sb-card iframe.editor-frame + .sb-row { margin-top: 8px; }
     .sb-menu { position: absolute;
       background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
       box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 4px; min-width: 110px; z-index: 10; }
@@ -915,7 +1053,7 @@
 
     /** Local author identity (see localName() in the pure helpers). */
     localName() {
-      return localName(this.pair ? this.pair.role : null);
+      return configuredName || localName(this.pair ? this.pair.role : null);
     }
 
     doc() { return this.core.doc; }
@@ -1177,6 +1315,7 @@
       comment.setAttribute('data-el', 'comment');
       const suggest = this.h(root, 'button', 'go alt', '✏️ Suggest edit');
       suggest.setAttribute('data-el', 'suggest');
+      suggest.style.display = suggestionsEnabled ? '' : 'none';
       comment.addEventListener('mousedown', (e) => e.preventDefault());
       suggest.addEventListener('mousedown', (e) => e.preventDefault());
       comment.addEventListener('click', () => {
@@ -1190,6 +1329,7 @@
       pill.appendChild(comment);
       pill.appendChild(suggest);
       root.appendChild(pill);
+      this._suggestButton = suggest;
       this.doc().addEventListener('mousedown', (e) => {
         if (e.button === 0 && !this.insideHost('pill', e)) this.hidePill();
       });
@@ -1215,7 +1355,8 @@
       if (range.toString().trim().length === 0) return this.hidePill();
       const rect = range.getBoundingClientRect();
       this.pillEl.style.display = 'flex';
-      this.pillEl.style.left = Math.max(4, rect.left + rect.width / 2 - 90) + 'px';
+      const width = this.pillEl.offsetWidth || (suggestionsEnabled ? 180 : 100);
+      this.pillEl.style.left = Math.max(4, rect.left + rect.width / 2 - width / 2) + 'px';
       this.pillEl.style.top = Math.min(rect.bottom + 6, doc.defaultView.innerHeight - 44) + 'px';
     }
 
@@ -1236,7 +1377,7 @@
       const q = this.h(root, 'p', 'q');
       const note = this.h(root, 'p', 'note');
       const meta = this.h(root, 'div', 'meta');
-      const row = this.h(root, 'div', 'row');
+      const row = this.h(root, 'div', 'row thread-actions');
       const openBtn = this.h(root, 'button', 'primary', 'Open thread');
       openBtn.setAttribute('data-el', 'open');
       const close = this.h(root, 'button', null, 'Close');
@@ -1269,7 +1410,7 @@
           }
         }
         const n = Array.isArray(mark.messages) ? mark.messages.length : 0;
-        meta.textContent = (mark.name || displayName(mark.author)) + ' · ' + fmtTime(mark.ts) +
+        meta.textContent = resolveAuthorName(mark.authorId, mark.name || displayName(mark.author)) + ' · ' + fmtTime(mark.ts) +
           (mark.kind === 'suggestion' ? ' · suggestion' : n > 1 ? ' · ' + n + ' comments' : n === 1 ? ' · 1 comment' : '');
         box.style.display = 'block';
         this.positionCard(anchorEl);
@@ -1312,8 +1453,8 @@
         e.preventDefault();
         e.stopPropagation();
         const id = hl.getAttribute(ID_ATTR);
-        // Clicking a highlight opens its thread in the sidebar (the hover
-        // card stays available for a quick peek without switching focus).
+        // Clicking a highlight dismisses the preview and opens its thread.
+        hide();
         this._sbHideMenu();
         this.openThread(id);
       }, true);
@@ -1364,14 +1505,36 @@
       aside.setAttribute('data-el', 'aside');
       const head = this.h(root, 'div', 'sb-head');
       const title = this.h(root, 'h3', null, 'Comments & suggestions');
-      const count = this.h(root, 'span', 'sb-count');
-      count.setAttribute('data-el', 'count');
+      const headActions = this.h(root, 'div', 'sb-head-actions');
+      const actions = this.h(root, 'button', 'sb-close', '⋮');
+      actions.setAttribute('data-el', 'global-actions');
+      actions.title = 'Sidebar actions';
+      actions.setAttribute('aria-label', 'Sidebar actions');
       const close = this.h(root, 'button', 'sb-close', '✕');
       close.setAttribute('data-el', 'close');
       close.title = 'Close sidebar';
+      const globalMenu = this.h(root, 'div', 'sb-global-menu');
+      globalMenu.setAttribute('data-el', 'global-menu');
+      globalMenu.style.display = 'none';
+      const setName = this.h(root, 'button', null, 'Set display name…');
+      const toggleSuggestions = this.h(root, 'button', null,
+        suggestionsEnabled ? 'Disable suggestions' : 'Enable suggestions');
+      const copyAll = this.h(root, 'button', null, 'Copy all as Markdown');
+      const clearAll = this.h(root, 'button', null, 'Clear all');
+      const separator = this.h(root, 'div', 'sb-global-separator');
+      separator.setAttribute('role', 'separator');
+      const reset = this.h(root, 'button', 'danger', 'Reset extension…');
+      globalMenu.appendChild(copyAll);
+      globalMenu.appendChild(setName);
+      globalMenu.appendChild(toggleSuggestions);
+      globalMenu.appendChild(clearAll);
+      globalMenu.appendChild(separator);
+      globalMenu.appendChild(reset);
+      headActions.appendChild(actions);
+      headActions.appendChild(close);
+      headActions.appendChild(globalMenu);
       head.appendChild(title);
-      head.appendChild(count);
-      head.appendChild(close);
+      head.appendChild(headActions);
       const list = this.h(root, 'div', 'sb-list');
       list.setAttribute('data-el', 'list');
       const empty = this.h(root, 'div', 'sb-empty');
@@ -1405,12 +1568,85 @@
       this._sbAside = aside;
       this._sbList = list;
       this._sbEmpty = empty;
-      this._sbCount = count;
+      this._sbGlobalMenu = globalMenu;
+      this._sbCopyAll = copyAll;
+      this._sbClearAll = clearAll;
       this._sbMenu = menu;
       this._sbMenuEdit = mEdit;
       this._sbMenuDelete = mDel;
 
       close.addEventListener('click', () => this.closeSidebar());
+      actions.addEventListener('click', (e) => {
+        e.stopPropagation();
+        globalMenu.style.display = globalMenu.style.display === 'none' ? 'block' : 'none';
+      });
+      aside.addEventListener('mousedown', (e) => {
+        if (globalMenu.style.display !== 'none' && e.target !== actions && !globalMenu.contains(e.target)) {
+          globalMenu.style.display = 'none';
+        }
+      });
+      setName.addEventListener('click', async () => {
+        globalMenu.style.display = 'none';
+        const fallback = localName(this.pair ? this.pair.role : null);
+        const value = this.doc().defaultView.prompt(
+          'Display name for new comments (leave blank to use ' + fallback + '):',
+          configuredName
+        );
+        if (value == null) return;
+        await saveConfiguredName(value);
+        await rememberAuthor(installationId, this.localName());
+        if (this._pairInviteName) this._pairInviteName.value = configuredName || AUTHORS.me;
+        if (this._pairJoinName) this._pairJoinName.value = configuredName || AUTHORS.peer;
+        this.renderSidebar(true);
+        if (this.pair) this.pair.sendState();
+        this.toast(configuredName ? 'Display name set to ' + configuredName : 'Using default display name ' + fallback);
+      });
+      toggleSuggestions.addEventListener('click', async () => {
+        globalMenu.style.display = 'none';
+        await saveSuggestionsEnabled(!suggestionsEnabled);
+        toggleSuggestions.textContent = suggestionsEnabled ? 'Disable suggestions' : 'Enable suggestions';
+        if (this._suggestButton) this._suggestButton.style.display = suggestionsEnabled ? '' : 'none';
+        this.hidePill();
+        this.toast(suggestionsEnabled ? 'Suggestions enabled' : 'Suggestions disabled');
+      });
+      copyAll.addEventListener('click', async () => {
+        globalMenu.style.display = 'none';
+        const text = threadsToMarkdown(this.core.marks || [], resolveAuthorName);
+        if (!text) { this.toast('Nothing to copy'); return; }
+        this.toast(await this.copyText(text) ? 'Copied all comments as Markdown' : 'Could not copy comments');
+      });
+      clearAll.addEventListener('click', () => {
+        globalMenu.style.display = 'none';
+        if (!(this.core.marks || []).length) return;
+        if (!this.doc().defaultView.confirm('Clear all comments and suggestions from this page?')) return;
+        this.sbOpenIds.clear();
+        this.sbComposerDrafts = {};
+        this.sbComposing = null;
+        this.sbFocusKey = null;
+        this.sbActiveId = null;
+        this.core.clearMarks();
+      });
+      reset.addEventListener('click', async () => {
+        globalMenu.style.display = 'none';
+        const confirmed = this.doc().defaultView.confirm(
+          'Reset the extension? This permanently deletes all annotations on every page, preferences, and this installation identity.'
+        );
+        if (!confirmed) return;
+        if (this.pair) this.pair.end();
+        D.clearAll(this.doc());
+        this.core.marks = [];
+        this.core.failed = [];
+        await browser.storage.local.clear();
+        try {
+          if (browser.storage.sync) await browser.storage.sync.clear();
+        } catch (_) { /* local reset still succeeded */ }
+        configuredName = '';
+        suggestionsEnabled = true;
+        knownAuthors = {};
+        installationId = newInstallationId();
+        await browser.storage.local.set({ [INSTALLATION_ID_KEY]: installationId });
+        this.doc().defaultView.location.reload();
+      });
       mEdit.addEventListener('click', () => this._sbMenuAction('edit'));
       mDel.addEventListener('click', () => this._sbMenuAction('delete'));
       list.addEventListener('focusin', (e) => {
@@ -1421,11 +1657,11 @@
       });
       list.addEventListener('scroll', () => this._sbHideMenu(), { passive: true });
       this.doc().addEventListener('mousedown', (e) => {
-        if (this.sbMenuFor && !this.insideHost('sidebar', e) &&
-            !(e.target && e.target.closest && e.target.closest('[' + ID_ATTR + ']'))) {
-          this._sbHideMenu();
-        }
-      });
+        if (this.insideHost('sidebar', e)) return;
+        if (e.target && e.target.closest && e.target.closest('[' + ID_ATTR + ']')) return;
+        if (this.sbMenuFor) this._sbHideMenu();
+        if (this.sidebarOpen()) this.closeSidebar();
+      }, true);
     }
 
     /** Escape: close the action menu, then the sidebar if open. In-progress
@@ -1446,6 +1682,7 @@
     closeSidebar() {
       if (!this._sbAside) return;
       this._sbAside.style.display = 'none';
+      if (this._sbGlobalMenu) this._sbGlobalMenu.style.display = 'none';
       this._sbHideMenu();
       this.sbMenuFor = null;
     }
@@ -1469,7 +1706,8 @@
       this._sbRenderPending = false;
       clearTimeout(this._sbRenderTimer);
       const marks = sortedThreads(this.core.marks || []);
-      this._sbCount.textContent = marks.length ? String(marks.length) : '';
+      this._sbCopyAll.disabled = !marks.length;
+      this._sbClearAll.disabled = !marks.length;
       this._sbEmpty.style.display = marks.length ? 'none' : '';
       this.disposeEditors(this._sbList);
       this._sbList.textContent = '';
@@ -1501,7 +1739,7 @@
       const badge = this.h(root, 'span', 'badge ' + (isSug ? 'suggestion' : 'comment'), isSug ? 'Suggestion' : 'Comment');
       const ctx = this.h(root, 'span', 'ctx', '“' + trunc(m.quote, 64) + '”');
       const nMsg = Array.isArray(m.messages) ? m.messages.length : 0;
-      const when = this.h(root, 'span', 'when', (m.name || displayName(m.author)) + ' · ' + fmtTime(m.ts) + (isSug ? '' : (nMsg ? ' · ' + nMsg + (nMsg === 1 ? ' comment' : ' comments') : '')));
+      const when = this.h(root, 'span', 'when', resolveAuthorName(m.authorId, m.name || displayName(m.author)) + ' · ' + fmtTime(m.ts) + (isSug ? '' : (nMsg ? ' · ' + nMsg + (nMsg === 1 ? ' comment' : ' comments') : '')));
       const more = this.h(root, 'button', 'sb-more', '⋮');
       more.setAttribute('data-el', 'more');
       more.title = 'Actions';
@@ -1515,19 +1753,22 @@
       const body = this.h(root, 'div', 'sb-card-body');
       const quote = this.h(root, 'p', 'quote', '“' + m.quote + '”');
       body.appendChild(quote);
+      const suggestionDraft = isSug ? this.sbComposerDrafts[m.id] : null;
+      const editingSuggestion = isSug && (
+        (this.sbComposing && this.sbComposing.id === m.id && this.sbComposing.mode === 'suggested') ||
+        (suggestionDraft && suggestionDraft.mode === 'suggested')
+      );
 
       if (isSug) {
         const pLabel = this.h(root, 'div', 'prop-label', 'Proposed replacement');
-        const draft = this.sbComposerDrafts[m.id];
-        const composing = this.sbComposing && this.sbComposing.id === m.id && this.sbComposing.mode === 'suggested';
         body.appendChild(pLabel);
-        if (composing || (draft && draft.mode === 'suggested')) {
+        if (editingSuggestion) {
           const ta = this.editor(root, 'prop-input', 'text');
           ta.setAttribute('data-el', 'composer');
           ta.setAttribute('data-id', m.id);
           ta.setAttribute('data-mode', 'suggested');
           ta.maxLength = 5000;
-          ta.value = (draft && draft.value != null) ? draft.value : (m.proposed || m.quote);
+          ta.value = (suggestionDraft && suggestionDraft.value != null) ? suggestionDraft.value : (m.proposed || m.quote);
           body.appendChild(ta);
           const row = this.h(root, 'div', 'sb-row');
           const submit = this.h(root, 'button', 'primary', 'Submit suggestion');
@@ -1549,7 +1790,7 @@
         for (const msg of msgs) {
           const el = this.h(root, 'div', 'sb-msg');
           const who = this.h(root, 'div', 'who', '');
-          const nm = this.h(root, 'b', null, msg.name || displayName(m.author));
+          const nm = this.h(root, 'b', null, resolveAuthorName(msg.authorId, msg.name || displayName(m.author)));
           const tm = this.h(root, 'span', null, fmtTime(msg.ts));
           who.appendChild(nm);
           who.appendChild(tm);
@@ -1563,26 +1804,29 @@
         body.appendChild(this.h(root, 'div', 'sb-none', 'No comments yet.'));
       }
 
-      // reply composer — always visible: threads accumulate replies over time
-      const cDraft = this.sbComposerDrafts[m.id];
-      const comp = this.h(root, 'div', 'composer');
-      const ta = this.editor(root, null, 'text');
-      ta.setAttribute('data-el', 'composer');
-      ta.setAttribute('data-id', m.id);
-      ta.setAttribute('data-mode', 'message');
-      ta.maxLength = 5000;
-      ta.placeholder = isSug ? 'Add a comment to this suggestion…' : 'Add a comment…';
-      ta.value = (cDraft && cDraft.mode === 'message' && cDraft.value != null) ? cDraft.value : '';
-      const row = this.h(root, 'div', 'sb-row');
-      const post = this.h(root, 'button', 'primary', isSug ? 'Comment' : 'Reply');
-      post.setAttribute('data-el', 'post');
-      const cancel = this.h(root, 'button', null, 'Cancel');
-      cancel.setAttribute('data-el', 'cancel');
-      row.appendChild(post);
-      row.appendChild(cancel);
-      comp.appendChild(ta);
-      comp.appendChild(row);
-      body.appendChild(comp);
+      // A new suggestion starts with only its replacement editor. Once that
+      // is submitted, the normal discussion composer becomes available.
+      if (!editingSuggestion) {
+        const cDraft = this.sbComposerDrafts[m.id];
+        const comp = this.h(root, 'div', 'composer');
+        const ta = this.editor(root, null, 'text');
+        ta.setAttribute('data-el', 'composer');
+        ta.setAttribute('data-id', m.id);
+        ta.setAttribute('data-mode', 'message');
+        ta.maxLength = 5000;
+        ta.placeholder = isSug ? 'Add a comment to this suggestion…' : 'Add a comment…';
+        ta.value = (cDraft && cDraft.mode === 'message' && cDraft.value != null) ? cDraft.value : '';
+        const row = this.h(root, 'div', 'sb-row');
+        const post = this.h(root, 'button', 'primary', isSug ? 'Comment' : 'Reply');
+        post.setAttribute('data-el', 'post');
+        const cancel = this.h(root, 'button', null, 'Cancel');
+        cancel.setAttribute('data-el', 'cancel');
+        row.appendChild(post);
+        row.appendChild(cancel);
+        comp.appendChild(ta);
+        comp.appendChild(row);
+        body.appendChild(comp);
+      }
 
       card.appendChild(head);
       card.appendChild(body);
@@ -1618,8 +1862,16 @@
         const cancel = body.querySelector('[data-el="cancel"]');
         post.addEventListener('click', () => this._sbPostMessage(m.id, msgTa));
         cancel.addEventListener('click', () => {
-          msgTa.value = '';
-          delete this.sbComposerDrafts[m.id];
+          const live = this.core.marks.find((thread) => thread.id === m.id);
+          this._sbClearComposing(m.id);
+          if (live && live.kind === 'comment' && !(Array.isArray(live.messages) && live.messages.length)) {
+            this.sbOpenIds.delete(m.id);
+            if (this.sbActiveId === m.id) this.sbActiveId = null;
+            this.core.deleteMark(m.id);
+            this.closeSidebar();
+          } else {
+            msgTa.value = '';
+          }
         });
         msgTa.addEventListener('input', () => {
           this.sbComposerDrafts[m.id] = { mode: 'message', value: msgTa.value };
@@ -1663,7 +1915,8 @@
       const cr = card ? card.getBoundingClientRect() : this._sbAside.getBoundingClientRect();
       // position just below the ⋮ button
       menu.style.top = (r.bottom - cr.top + 4) + 'px';
-      menu.style.left = Math.max(4, r.left - cr.left) + 'px';
+      menu.style.left = 'auto';
+      menu.style.right = Math.max(4, cr.right - r.right) + 'px';
     }
 
     _sbHideMenu() {
@@ -1721,7 +1974,7 @@
       const raw = ta.tmbReadValue ? await ta.tmbReadValue() : ta.value;
       const value = (raw || '').trim();
       if (!value) { this.toast('Write a comment first'); return; }
-      this.core.updateThread(id, (t) => appendMessage(t, value, this.localName(), Date.now()));
+      this.core.updateThread(id, (t) => appendMessage(t, value, this.localName(), Date.now(), installationId));
       // Keep the composer focused for follow-up replies in the same thread.
       delete this.sbComposerDrafts[id];
       this.sbOpenIds.add(id);
@@ -1782,6 +2035,10 @@
 
       // invite pane
       const paneInvite = this.h(root, 'div', 'pane on');
+      const inviteNameLabel = this.h(root, 'label', null, 'Your display name');
+      const inviteName = this.editor(root, 'pair-name', 'text');
+      inviteName.maxLength = 80;
+      inviteName.value = configuredName || AUTHORS.me;
       const gen = this.h(root, 'button', 'primary', '1. Generate invite code');
       gen.setAttribute('data-el', 'gen');
       const inviteOut = this.editor(root, null, 'code');
@@ -1798,6 +2055,8 @@
       invActions.appendChild(gen);
       invActions.appendChild(copyInv);
       invActions.appendChild(connect);
+      paneInvite.appendChild(inviteNameLabel);
+      paneInvite.appendChild(inviteName);
       paneInvite.appendChild(gen);
       paneInvite.appendChild(inviteOut);
       paneInvite.appendChild(invActions);
@@ -1807,6 +2066,10 @@
 
       // join pane
       const paneJoin = this.h(root, 'div', 'pane');
+      const joinNameLabel = this.h(root, 'label', null, 'Your display name');
+      const joinName = this.editor(root, 'pair-name', 'text');
+      joinName.maxLength = 80;
+      joinName.value = configuredName || AUTHORS.peer;
       const invInLabel = this.h(root, 'label', null, '1. Paste the invite code');
       const invIn = this.editor(root, null, 'code');
       invIn.setAttribute('data-el', 'invite-in');
@@ -1821,6 +2084,8 @@
       const joinActions = this.h(root, 'div', 'actions');
       joinActions.appendChild(genJoin);
       joinActions.appendChild(copyJoin);
+      paneJoin.appendChild(joinNameLabel);
+      paneJoin.appendChild(joinName);
       paneJoin.appendChild(invInLabel);
       paneJoin.appendChild(invIn);
       paneJoin.appendChild(joinActions);
@@ -1855,6 +2120,8 @@
       sheet.appendChild(help);
       overlay.appendChild(sheet);
       root.appendChild(overlay);
+      this._pairInviteName = inviteName;
+      this._pairJoinName = joinName;
 
       const setTab = (invite) => {
         tabInvite.classList.toggle('on', invite);
@@ -1874,6 +2141,9 @@
       gen.addEventListener('click', async () => {
         busy(gen, true);
         try {
+          const rawName = inviteName.tmbReadValue ? await inviteName.tmbReadValue() : inviteName.value;
+          await saveConfiguredName(rawName || AUTHORS.me);
+          await rememberAuthor(installationId, this.localName());
           const code = await this.pair.makeInvite();
           inviteOut.value = code;
           this.toast('Invite code ready — send it to the other browser');
@@ -1899,6 +2169,9 @@
       genJoin.addEventListener('click', async () => {
         busy(genJoin, true);
         try {
+          const rawName = joinName.tmbReadValue ? await joinName.tmbReadValue() : joinName.value;
+          await saveConfiguredName(rawName || AUTHORS.peer);
+          await rememberAuthor(installationId, this.localName());
           const inviteCode = invIn.tmbReadValue ? await invIn.tmbReadValue() : invIn.value;
           const code = await this.pair.makeJoin(inviteCode);
           joinOut.value = code;
@@ -2037,6 +2310,7 @@
       messages: [],
       proposed: '',
       author: LOCAL_ROLE,
+      authorId: installationId,
       name,
       ts: Date.now(),
       color: DEFAULT_COLOR,
@@ -2082,6 +2356,14 @@
   Core.prototype.deleteMark = function (id) {
     this.marks = this.marks.filter((m) => m.id !== id);
     D.unwrap(this.doc, id);
+    this.save().then(() => this.emitChange());
+  };
+
+  Core.prototype.clearMarks = function () {
+    this.marks = [];
+    this.failed = [];
+    D.clearAll(this.doc);
+    if (this.ui && this.ui.renderSidebar) this.ui.renderSidebar(true);
     this.save().then(() => this.emitChange());
   };
 
@@ -2167,6 +2449,13 @@
 
   async function boot() {
     injectPageCSS();
+    const identity = await loadAuthorIdentity();
+    installationId = identity.id;
+    knownAuthors = identity.authors;
+    [configuredName, suggestionsEnabled] = await Promise.all([
+      loadConfiguredName(),
+      loadSuggestionsEnabled(),
+    ]);
     const doc = document;
     const core = new Core(doc);
     const pair = new Pair(core);

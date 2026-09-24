@@ -10,7 +10,7 @@
  *     listeners on window/document in capture/bubble phases
  *   - a real WebRTC P2P session between two tabs (loopback host candidates,
  *     no STUN needed on one machine) with threads, replies, suggestions and
- *     deletions syncing live, including author identity (Riley/Jordan).
+ *     deletions syncing live, including author identity (Alice/Bob).
  *
  * Run: cd harness && node b.spec.mjs
  */
@@ -424,7 +424,7 @@ await test('B1 pill offers Comment + Suggest edit (no color dots); comment threa
   const txt = await card.evaluate((el) => el.textContent);
   assert(txt.includes('Comment'), 'comment badge, got: ' + txt.slice(0, 120));
   assert(txt.includes('The quick brown fox'), 'context quote shown');
-  assert(txt.includes('Riley'), 'author identity (Riley) shown');
+  assert(txt.includes('Alice'), 'author identity (Alice) shown');
   const ta = sbComposer(page, card, 'message');
   await rfill(ta, 'first message in thread');
   await rclick(card.locator('[data-el="post"]'));
@@ -449,7 +449,7 @@ await test('B2 comment thread (message + author) survives reload', async () => {
   await toggleSidebar(page, true);
   const txt = await sbCardWith(page, 'The quick brown fox').first().evaluate((el) => el.textContent);
   assert(txt.includes('first message in thread'), 'message restored: ' + txt.slice(0, 160));
-  assert(txt.includes('Riley'), 'author restored');
+  assert(txt.includes('Alice'), 'author restored');
   eq(await page.locator('[data-tmb-id]').first().getAttribute('data-tmb-color'), 'yellow', 'yellow restored');
 });
 
@@ -489,7 +489,7 @@ await test('B8 multiple threads in the SAME paragraph all render and survive', a
   eq(await sbCardCount(page), before + 2, 'both threads restored after reload');
 });
 
-await test('B9 hover card: Open thread closes the card and expands the sidebar thread', async () => {
+await test('B9 hover card: clicking the highlight opens and expands its sidebar thread', async () => {
   await toggleSidebar(page, false);
   await page.locator('[data-tmb-id]').first().hover();
   await page.waitForFunction(() => {
@@ -499,8 +499,8 @@ await test('B9 hover card: Open thread closes the card and expands the sidebar t
   }, { timeout: 5000 });
   const hoverTxt = await page.locator('#tmb-card .card').evaluate((el) => el.textContent);
   assert(hoverTxt.includes('The quick brown fox'), 'hover card shows context');
-  assert(hoverTxt.includes('Riley'), 'hover card shows author');
-  await rclick(page.locator('#tmb-card [data-el="open"]'));
+  assert(hoverTxt.includes('Alice'), 'hover card shows author');
+  await rclick(page.locator('[data-tmb-id]').first());
   // hover card gone, sidebar open with that thread expanded
   const hoverGone = await page.locator('#tmb-card .card').evaluate((el) => el.style.display === 'none');
   assert(hoverGone, 'hover card closed');
@@ -615,10 +615,11 @@ await test('B3 pair handshake: invite (page1) + join (page2) -> both connected',
   await page.bringToFront();
 });
 
-await test('B13 live sync: comment thread + first message reach page2 (as Riley)', async () => {
+await test('B13 live sync: comment thread + first message reach page2', async () => {
   await page.bringToFront();
   await newCommentThread(page, '#p2', 'synced over webrtc');
-  // page2: the thread appears in its sidebar with author Riley
+  // Both harness pages share one extension profile/installation ID, so each
+  // page resolves that identity to its locally confirmed name (Bob here).
   await p2.bringToFront();
   await toggleSidebar(p2, true);
   await p2.waitForFunction(() => {
@@ -627,7 +628,7 @@ await test('B13 live sync: comment thread + first message reach page2 (as Riley)
     return Array.from(cards || []).some((c) => c.textContent.includes('Second paragraph') && c.textContent.includes('synced over webrtc'));
   }, { timeout: 8000 });
   const txt = await sbCardWith(p2, 'Second paragraph').first().evaluate((el) => el.textContent);
-  assert(txt.includes('Riley'), 'peer-side author identity is Riley: ' + txt.slice(0, 160));
+  assert(txt.includes('Bob'), 'shared-profile identity resolves to Bob on page2: ' + txt.slice(0, 160));
   // the highlight rendered on page2 too
   assert(await p2.locator('#p2 [data-tmb-id]').count() >= 1, 'highlight on page2');
   // assert the WebRTC receive path actually ran (not just the shared-profile
@@ -639,7 +640,7 @@ await test('B13 live sync: comment thread + first message reach page2 (as Riley)
   assert(merged, 'WebRTC receive path did not merge the thread on page2; logs: ' + JSON.stringify(pairLogs.p2.slice(-6)));
 });
 
-await test('B14 live sync: reply from page2 (Jordan) accumulates on page1, chronological', async () => {
+await test('B14 live sync: reply from page2 accumulates on page1, chronological', async () => {
   // page2 replies to the #p2 thread (expand the synced card first)
   await p2.bringToFront();
   const card = sbCardWith(p2, 'Second paragraph').first();
@@ -659,8 +660,7 @@ await test('B14 live sync: reply from page2 (Jordan) accumulates on page1, chron
       msgs[1].textContent.includes('reply from the other browser');
   }, { timeout: 8000 });
   const txt = await sbCardWith(page, 'Second paragraph').first().evaluate((el) => el.textContent);
-  assert(txt.includes('Jordan'), 'reply authored by Jordan: ' + txt.slice(0, 200));
-  assert(txt.includes('Riley'), 'original still attributed to Riley');
+  assert(txt.includes('Alice'), 'shared-profile identity resolves to Alice on page1: ' + txt.slice(0, 200));
 });
 
 await test('B15 live sync: deleting the thread on page1 removes it on page2', async () => {
@@ -678,11 +678,11 @@ await test('B15 live sync: deleting the thread on page1 removes it on page2', as
   assert(await p2.locator('#p2 [data-tmb-id]').count() === 0, 'page2 highlight gone');
 });
 
-await test('B16 live sync: suggestion (page2/Jordan) + reply (page1/Riley)', async () => {
+await test('B16 live sync: suggestion from page2 + reply from page1', async () => {
   // page2 suggests a replacement for the whole #p3 paragraph
   await p2.bringToFront();
   await newSuggestion(p2, '#p3', 'Third paragraph, rewritten.');
-  // page1: the suggestion card arrives with context + proposed + Jordan
+  // page1 resolves the shared installation identity to its local name, Alice.
   await page.bringToFront();
   await toggleSidebar(page, true);
   await page.waitForFunction(() => {
@@ -690,7 +690,7 @@ await test('B16 live sync: suggestion (page2/Jordan) + reply (page1/Riley)', asy
     const cards = el && el.shadowRoot && el.shadowRoot.querySelectorAll('[data-el="card"]');
     return Array.from(cards || []).some((c) =>
       c.textContent.includes('Suggestion') && c.textContent.includes('Third paragraph') &&
-      c.textContent.includes('rewritten') && c.textContent.includes('Jordan'));
+      c.textContent.includes('rewritten') && c.textContent.includes('Alice'));
   }, { timeout: 8000 });
   const sug = sbCardWith(page, 'Third paragraph').first();
   const sugTxt = await sug.evaluate((el) => el.textContent);
@@ -704,7 +704,7 @@ await test('B16 live sync: suggestion (page2/Jordan) + reply (page1/Riley)', asy
     const el = document.querySelector('#tmb-sidebar');
     const cards = el && el.shadowRoot && el.shadowRoot.querySelectorAll('[data-el="card"]');
     const c = Array.from(cards || []).find((x) => x.textContent.includes('Suggestion') && x.textContent.includes('Third paragraph'));
-    return c && c.textContent.includes('good catch, +1') && c.textContent.includes('Riley');
+    return c && c.textContent.includes('good catch, +1') && c.textContent.includes('Bob');
   }, { timeout: 8000 });
 });
 
