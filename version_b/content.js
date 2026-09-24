@@ -243,6 +243,28 @@
     }).join('\n\n---\n\n');
   }
 
+  /** Merge backup pages without treating absence from a backup as deletion. */
+  function mergePageStores(localPages, importedPages) {
+    const out = Object.assign({}, localPages || {});
+    for (const [url, importedPage] of Object.entries(importedPages || {})) {
+      if (url === '__proto__' || url === 'constructor' || url === 'prototype') continue;
+      if (!importedPage || !Array.isArray(importedPage.marks)) continue;
+      const localPage = out[url];
+      const localMarks = localPage && Array.isArray(localPage.marks) ? localPage.marks : [];
+      const byId = new Map(localMarks.map((mark) => [mark.id, mark]));
+      for (const mark of importedPage.marks) {
+        if (!mark || typeof mark !== 'object' || typeof mark.id !== 'string') continue;
+        const current = byId.get(mark.id);
+        if (!current || Number(mark.ts || 0) > Number(current.ts || 0)) byId.set(mark.id, mark);
+      }
+      out[url] = {
+        marks: Array.from(byId.values()),
+        updated: Math.max(Number(localPage && localPage.updated || 0), Number(importedPage.updated || 0)),
+      };
+    }
+    return out;
+  }
+
   const threadsEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   /**
@@ -304,6 +326,8 @@
       normalizeMarks,
       sortedThreads,
       threadsToMarkdown,
+      mergePageStores,
+      readBackup,
     };
   }
 
@@ -322,6 +346,8 @@
   const THEME_KEY = 'tmb.theme';
   const INSTALLATION_ID_KEY = 'tmb.installationId';
   const AUTHORS_KEY = 'tmb.authors';
+  const BACKUP_FORMAT = 'textmarker-pairshare';
+  const BACKUP_VERSION = 1;
   let configuredName = '';
   let suggestionsEnabled = true;
   let uiTheme = 'light';
@@ -424,6 +450,46 @@
     try {
       if (browser.storage.sync) await browser.storage.sync.set({ [THEME_KEY]: uiTheme });
     } catch (_) { /* local persistence still succeeded */ }
+  }
+
+  function readBackup(text) {
+    let backup;
+    try { backup = JSON.parse(text); } catch (_) { throw new Error('This is not valid JSON.'); }
+    if (!backup || backup.format !== BACKUP_FORMAT || backup.version !== BACKUP_VERSION) {
+      throw new Error('This is not a supported Pairshare backup.');
+    }
+    const data = backup.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('The backup has no data section.');
+    const pages = data.pages;
+    if (!pages || typeof pages !== 'object' || Array.isArray(pages)) throw new Error('The backup has no page annotations.');
+    const entries = Object.entries(pages);
+    if (entries.length > 5000) throw new Error('The backup contains too many pages.');
+    let marks = 0;
+    for (const [url, page] of entries) {
+      if (url.length > 10000 || !page || !Array.isArray(page.marks)) throw new Error('The backup contains an invalid page.');
+      marks += page.marks.length;
+      if (page.marks.length > 10000 || marks > 100000) throw new Error('The backup contains too many annotations.');
+      for (const mark of page.marks) {
+        if (!mark || typeof mark !== 'object' || typeof mark.id !== 'string' || typeof mark.quote !== 'string') {
+          throw new Error('The backup contains an invalid annotation.');
+        }
+      }
+    }
+    const preferences = data.preferences && typeof data.preferences === 'object' && !Array.isArray(data.preferences)
+      ? data.preferences : {};
+    const identity = data.identity;
+    if (!identity || typeof identity !== 'object' || typeof identity.authorId !== 'string' ||
+        !identity.authorId || identity.authorId.length > 200) {
+      throw new Error('The backup has no valid installation identity.');
+    }
+    const authors = {};
+    if (data.authors && typeof data.authors === 'object' && !Array.isArray(data.authors)) {
+      for (const [id, name] of Object.entries(data.authors)) {
+        if (id === '__proto__' || id === 'constructor' || id === 'prototype') continue;
+        if (id.length <= 200 && typeof name === 'string' && name.trim()) authors[id] = name.trim().slice(0, 80);
+      }
+    }
+    return { pages, preferences, identity, authors, pageCount: entries.length, markCount: marks };
   }
   const HL_CLASS = 'tmb-hl';
 
@@ -1390,6 +1456,102 @@
       }
     }
 
+    async exportData() {
+      const stored = await browser.storage.local.get([PAGES_KEY, COLOR_KEY, AUTHORS_KEY]);
+      const payload = {
+        format: BACKUP_FORMAT,
+        version: BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        data: {
+          pages: stored[PAGES_KEY] || {},
+          authors: stored[AUTHORS_KEY] || knownAuthors,
+          identity: { authorId: installationId },
+          preferences: {
+            displayName: configuredName,
+            suggestionsEnabled,
+            theme: uiTheme,
+            color: stored[COLOR_KEY] || DEFAULT_COLOR,
+          },
+        },
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], { type: 'application/json' });
+      const href = URL.createObjectURL(blob);
+      const link = this.doc().createElement('a');
+      link.href = href;
+      link.download = 'pairshare-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+      link.setAttribute(SKIP, '');
+      link.style.display = 'none';
+      (this.doc().body || this.doc().documentElement).appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+      const pages = Object.values(payload.data.pages);
+      const count = pages.reduce((n, page) => n + (page && Array.isArray(page.marks) ? page.marks.length : 0), 0);
+      this.toast('Exported ' + count + ' annotation' + (count === 1 ? '' : 's'));
+    }
+
+    chooseImportFile() {
+      const input = this.doc().createElement('input');
+      input.type = 'file';
+      input.accept = 'application/json,.json';
+      input.setAttribute(SKIP, '');
+      input.style.display = 'none';
+      (this.doc().body || this.doc().documentElement).appendChild(input);
+      input.addEventListener('change', async () => {
+        const file = input.files && input.files[0];
+        input.remove();
+        if (!file) return;
+        try {
+          if (file.size > 10 * 1024 * 1024) throw new Error('The backup is larger than 10 MB.');
+          await this.importData(await file.text());
+        } catch (err) {
+          this.toast('Import failed: ' + (err && err.message ? err.message : 'unknown error'));
+        }
+      }, { once: true });
+      input.click();
+    }
+
+    async importData(text) {
+      const backup = readBackup(text);
+      const confirmed = this.doc().defaultView.confirm(
+        'Import ' + backup.markCount + ' annotation' + (backup.markCount === 1 ? '' : 's') +
+        ' across ' + backup.pageCount + ' page' + (backup.pageCount === 1 ? '' : 's') +
+        '? Existing annotations are kept, newer matching records win, and this browser adopts the backup identity.'
+      );
+      if (!confirmed) return;
+      if (this.pair) this.pair.end();
+      const stored = await browser.storage.local.get([PAGES_KEY, AUTHORS_KEY]);
+      const preferences = backup.preferences;
+      const importedName = typeof preferences.displayName === 'string'
+        ? preferences.displayName.trim().slice(0, 80) : configuredName;
+      const importedSuggestions = typeof preferences.suggestionsEnabled === 'boolean'
+        ? preferences.suggestionsEnabled : suggestionsEnabled;
+      const importedTheme = preferences.theme === 'dark' || preferences.theme === 'light'
+        ? preferences.theme : uiTheme;
+      const importedColor = typeof preferences.color === 'string' && COLORS[preferences.color]
+        ? preferences.color : DEFAULT_COLOR;
+      const authors = Object.assign({}, stored[AUTHORS_KEY] || {}, backup.authors);
+      const importedAuthorId = backup.identity.authorId;
+      authors[importedAuthorId] = importedName || authors[importedAuthorId] || AUTHORS.me;
+      await browser.storage.local.set({
+        [PAGES_KEY]: mergePageStores(stored[PAGES_KEY] || {}, backup.pages),
+        [AUTHORS_KEY]: authors,
+        [NAME_KEY]: importedName,
+        [SUGGESTIONS_KEY]: importedSuggestions,
+        [THEME_KEY]: importedTheme,
+        [COLOR_KEY]: importedColor,
+        [INSTALLATION_ID_KEY]: importedAuthorId,
+      });
+      try {
+        if (browser.storage.sync) await browser.storage.sync.set({
+          [NAME_KEY]: importedName,
+          [SUGGESTIONS_KEY]: importedSuggestions,
+          [THEME_KEY]: importedTheme,
+        });
+      } catch (_) { /* local import still succeeded */ }
+      this.doc().defaultView.location.reload();
+    }
+
     /* ---- pill ---- */
 
     _buildPill() {
@@ -1608,11 +1770,18 @@
       const toggleTheme = this.h(root, 'button', null,
         uiTheme === 'dark' ? 'Use light mode' : 'Use dark mode');
       const copyAll = this.h(root, 'button', null, 'Copy all as Markdown');
+      const exportData = this.h(root, 'button', null, 'Export data…');
+      const importData = this.h(root, 'button', null, 'Import data…');
+      const dataSeparator = this.h(root, 'div', 'sb-global-separator');
+      dataSeparator.setAttribute('role', 'separator');
       const clearAll = this.h(root, 'button', null, 'Clear all');
       const separator = this.h(root, 'div', 'sb-global-separator');
       separator.setAttribute('role', 'separator');
       const reset = this.h(root, 'button', 'danger', 'Reset extension…');
       globalMenu.appendChild(copyAll);
+      globalMenu.appendChild(exportData);
+      globalMenu.appendChild(importData);
+      globalMenu.appendChild(dataSeparator);
       globalMenu.appendChild(setName);
       globalMenu.appendChild(toggleSuggestions);
       globalMenu.appendChild(toggleTheme);
@@ -1710,6 +1879,15 @@
         const text = threadsToMarkdown(this.core.marks || [], resolveAuthorName);
         if (!text) { this.toast('Nothing to copy'); return; }
         this.toast(await this.copyText(text) ? 'Copied all comments as Markdown' : 'Could not copy comments');
+      });
+      exportData.addEventListener('click', async () => {
+        globalMenu.style.display = 'none';
+        try { await this.exportData(); }
+        catch (err) { this.toast('Export failed: ' + (err && err.message ? err.message : 'unknown error')); }
+      });
+      importData.addEventListener('click', () => {
+        globalMenu.style.display = 'none';
+        this.chooseImportFile();
       });
       clearAll.addEventListener('click', () => {
         globalMenu.style.display = 'none';
@@ -1851,7 +2029,8 @@
       const quote = this.h(root, 'p', 'quote', '“' + m.quote + '”');
       body.appendChild(quote);
       const suggestionDraft = isSug ? this.sbComposerDrafts[m.id] : null;
-      const editingSuggestion = isSug && (
+      const active = m.id === this.sbActiveId;
+      const editingSuggestion = isSug && active && (
         (this.sbComposing && this.sbComposing.id === m.id && this.sbComposing.mode === 'suggested') ||
         (suggestionDraft && suggestionDraft.mode === 'suggested')
       );
@@ -1903,7 +2082,7 @@
 
       // A new suggestion starts with only its replacement editor. Once that
       // is submitted, the normal discussion composer becomes available.
-      if (!editingSuggestion) {
+      if (!editingSuggestion && active) {
         const cDraft = this.sbComposerDrafts[m.id];
         const comp = this.h(root, 'div', 'composer');
         const ta = this.editor(root, null, 'text');
@@ -1931,7 +2110,7 @@
       // header toggles expand/collapse (but a click on ⋮ must not)
       head.addEventListener('click', (e) => {
         if (e.target === more) return;
-        this._sbToggle(m.id, card);
+        this._sbToggle(m.id);
       });
       more.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1981,14 +2160,15 @@
       return card;
     }
 
-    _sbToggle(id, card) {
+    _sbToggle(id) {
       if (this.sbOpenIds.has(id)) {
         this.sbOpenIds.delete(id);
-        if (card) card.classList.remove('open');
+        if (this.sbActiveId === id) this.sbActiveId = null;
       } else {
         this.sbOpenIds.add(id);
-        if (card) card.classList.add('open');
+        this.sbActiveId = id;
       }
+      this.renderSidebar(true);
     }
 
     _sbFindCard(id) {
@@ -2034,6 +2214,7 @@
         this.core.deleteMark(m.id);
         this.renderSidebar();
       } else if (action === 'edit') {
+        this.sbActiveId = m.id;
         if (m.kind === 'suggestion') {
           this.sbComposing = { id: m.id, mode: 'suggested' };
           this.sbComposerDrafts[m.id] = { mode: 'suggested', value: m.proposed || m.quote };

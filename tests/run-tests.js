@@ -514,6 +514,38 @@ function testB() {
       '> quote\n\n**Alicia:** Updated identity.');
   });
 
+  test('pure: mergePageStores keeps unique annotations and newer collisions', () => {
+    const local = {
+      'https://one.test/': { updated: 20, marks: [{ id: 'same', ts: 20, quote: 'local' }, { id: 'local', ts: 1, quote: 'local only' }] },
+    };
+    const imported = {
+      'https://one.test/': { updated: 30, marks: [{ id: 'same', ts: 30, quote: 'imported' }, { id: 'imported', ts: 2, quote: 'import only' }] },
+      'https://two.test/': { updated: 5, marks: [{ id: 'two', ts: 5, quote: 'second page' }] },
+    };
+    const merged = P.mergePageStores(local, imported);
+    eq(merged['https://one.test/'].marks.map((m) => [m.id, m.quote]), [
+      ['same', 'imported'], ['local', 'local only'], ['imported', 'import only'],
+    ]);
+    eq(merged['https://one.test/'].updated, 30);
+    eq(merged['https://two.test/'].marks.length, 1);
+  });
+
+  test('pure: readBackup accepts version 1 and rejects unsupported files', () => {
+    const valid = P.readBackup(JSON.stringify({
+      format: 'textmarker-pairshare', version: 1,
+      data: {
+        pages: { 'https://one.test/': { marks: [{ id: 'm', quote: 'q', ts: 1 }] } },
+        identity: { authorId: 'install-1' },
+        authors: { author: 'Alice' }, preferences: { theme: 'dark' },
+      },
+    }));
+    eq([valid.pageCount, valid.markCount, valid.identity.authorId, valid.authors.author], [1, 1, 'install-1', 'Alice']);
+    let rejected = false;
+    try { P.readBackup('{"format":"something-else","version":1,"data":{}}'); }
+    catch (_) { rejected = true; }
+    assert(rejected, 'unsupported backup rejected');
+  });
+
   test('pure: mergeMarks syncs thread replies (whole-thread LWW)', () => {
     // peer appended a reply -> newer remote thread wins
     const base = P.appendMessage(thread0(), 'mine', 'Alice', 100);

@@ -475,6 +475,8 @@ await test('B8 multiple threads in the SAME paragraph all render and survive', a
 
   // Both new threads present right now — no reload, no retry.
   eq(await sbCardCount(page), before + 2, 'both threads in same paragraph rendered immediately');
+  eq(await sb(page).locator('[data-el="composer"][data-mode="message"]').count(), 1,
+    'only the current thread renders a reply composer');
   const live = await page.locator('[data-tmb-id]').count();
   assert(live >= 3, 'highlights present, got ' + live);
 
@@ -573,6 +575,33 @@ await test('B12 ⋮ menu Delete removes the thread and its highlight', async () 
   eq(await sbCardCount(page), 1, 'card removed');
   const bodyText = await page.locator('#p3').textContent();
   assert(bodyText.includes('Third paragraph'), 'page text intact after unwrap');
+});
+
+await test('B23 versioned backup exports and imports annotations with installation identity', async () => {
+  await toggleSidebar(page, true);
+  await rclick(sb(page).locator('[data-el="global-actions"]'));
+  const downloadReady = page.waitForEvent('download');
+  await rclick(sb(page).locator('[data-el="global-menu"] button', { hasText: 'Export data' }));
+  const download = await downloadReady;
+  const backupPath = await download.path();
+  const backupText = await fs.readFile(backupPath, 'utf8');
+  const backup = JSON.parse(backupText);
+  eq(backup.format, 'textmarker-pairshare', 'backup format');
+  eq(backup.version, 1, 'backup version');
+  assert(backup.data && backup.data.pages, 'backup includes pages');
+  assert(backup.data.identity && backup.data.identity.authorId, 'backup includes portable installation identity');
+
+  await rclick(sb(page).locator('[data-el="global-actions"]'));
+  const chooserReady = page.waitForEvent('filechooser');
+  await rclick(sb(page).locator('[data-el="global-menu"] button', { hasText: 'Import data' }));
+  const chooser = await chooserReady;
+  page.once('dialog', (dialog) => dialog.accept());
+  const loaded = page.waitForEvent('load');
+  await chooser.setFiles(backupPath);
+  await loaded;
+  await waitBooted(page);
+  await toggleSidebar(page, true);
+  assert(await sbCardCount(page) >= 1, 'annotations survive backup import reload');
 });
 
 /* ---------------- pairing ---------------- */

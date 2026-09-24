@@ -41,9 +41,13 @@ delete syncs in real time and is saved locally on both sides.
    single-message comment threads on load.
 6. Hover a highlight for a preview; click the highlight to open its thread in
    the sidebar.
-7. `Alt+M` — comment on the current selection. `Alt+L` — open/close the
+7. The sidebar menu can copy the current page as Markdown or export/import a
+   versioned JSON backup containing all pages, preferences, and author-name
+   mappings. Import also adopts the exported installation identity so migrated
+   comments remain attributable when moving to another machine or browser.
+8. `Alt+M` — comment on the current selection. `Alt+L` — open/close the
    sidebar. `Alt+P` (or the toolbar button) — open the Pair panel.
-8. Writable comment, suggestion, invite, and join fields run in small
+9. Writable comment, suggestion, invite, and join fields run in small
    extension-origin editor frames. Their keyboard events never enter the host
    page's `window` / `document` event path, so pre-existing page hotkeys cannot
    cancel typing or steal focus. Non-editable page/highlight UI stays in the
@@ -71,8 +75,8 @@ sync in real time, with each side's author identity attached.
 ## Testing
 
 ```sh
-node tests/run-tests.js b     # 22 unit tests (threads, identities, merge, codes, matcher, DOM)
-cd harness && node b.spec.mjs # 19 headless Playwright e2e tests — includes a REAL
+node tests/run-tests.js b     # 24 unit tests (threads, backup, identities, merge, matcher, DOM)
+cd harness && node b.spec.mjs # 20 headless Playwright e2e tests — includes a REAL
                               # WebRTC session between two tabs (loopback)
 HEADED=1 node b.spec.mjs      # optional visible browser for debugging
 ```
